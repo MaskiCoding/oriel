@@ -40,6 +40,7 @@ An oriel is a bay window that projects outward so you can see in every direction
 - Repeated key presses (and key-repeat) cycle forward; `⇧` cycles backward; once a session is active, the bare trigger key keeps cycling.
 - Release of the held modifier executes the lens's release action (Jump/Linger/Filter). `⏎` focuses, `⎋` cancels, click focuses.
 - Selection restores correct state: focusing a minimized window de-minimizes it; a hidden app unhides; a window on another Space switches Spaces; an app with no windows gets activated/launched.
+- Hitting a different lens's trigger mid-session morphs the strip in place — filters, ordering, and style update live, no dismiss/re-summon.
 - The native system app switcher is suppressed while Oriel holds `⌘⇥`-family triggers, and **always restored on quit or crash** (the suppression persists at the OS level otherwise — this is a hard invariant).
 
 ### 4.2 In-session controls (rebindable single keys)
@@ -56,7 +57,7 @@ An oriel is a bay window that projects outward so you can see in every direction
 | `H` | Hide / show selected app |
 | typing (Filter mode) | Narrow the strip |
 
-Mouse: click to focus; optional hover-select; scroll to pan the strip. (Drag-a-file-onto-a-tile-to-open: backlog, not v1.)
+Mouse: click to focus; optional hover-select; scroll moves the selection. (Drag-a-file-onto-a-tile-to-open: backlog, not v1.)
 
 ### 4.3 Per-lens filtering
 
@@ -78,10 +79,11 @@ Default lenses: Lens 1 `⌘⇥` all apps, everything shown, windowless apps at e
 
 ### 4.5 Filter (type-to-narrow)
 
-Match tiers, best first: exact > prefix > word-boundary prefix (incl. camelCase) > substring > acronym > small-edit-distance fuzzy. App name weighs above window title. Diacritic-insensitive. Matched spans highlighted. Matches sort above non-matches rather than hiding them instantly (no layout jumps mid-typing).
+Match tiers, best first: exact > prefix > word-boundary prefix (incl. camelCase) > substring > acronym > small-edit-distance fuzzy. App name weighs above window title. Diacritic-insensitive. Matched spans highlighted. Matches sort above non-matches rather than hiding them instantly (no layout jumps mid-typing). In a Linger session, typing enters Filter directly — no mode key.
 
 ### 4.6 Presentation
 
+- **Layout**: a wrapping grid (~7 tiles per row at medium size) — every window visible at once, selection moves in 2D and wraps at the edges. With many windows, tiles densify stepwise toward Icons-scale so everything stays on one screen. The strip never scrolls.
 - **Styles** (per lens): **Gallery** (live preview tiles — default), **Icons** (large app icons, compact), **List** (rows of icon + title, dense).
 - **Size**: small / medium / large / **auto** (few windows → bigger tiles, many → more per row; computed from physical screen dimensions).
 - **Theme**: light / dark / system. Native vibrancy/blur material.
@@ -98,9 +100,9 @@ Match tiers, best first: exact > prefix > word-boundary prefix (incl. camelCase)
 
 ### 4.8 Resident app surface
 
-- Menu bar item (hideable): open settings, pause Oriel, restart, quit.
+- Menu bar item (hideable): open settings, pause Oriel (pausing restores the native switcher until resumed), restart, quit.
 - Config is a **TOML file** at `~/.config/oriel/config.toml` — the source of truth, hot-reloaded on save, diffable, versionable. A native settings window comes later (M5) and is a *view* over the same file.
-- Start at login via the modern service-management API. `LSUIElement` — no Dock icon.
+- Start at login (default on) via the modern service-management API. `LSUIElement` — no Dock icon.
 - Permissions bootstrap on first run: Accessibility is required (hard gate with a guided prompt); Screen Recording is optional — without it Oriel runs in Icons/List styles with previews disabled, and says so once, quietly.
 - **Background capture** toggle (default on): keeps previews warm so the strip opens pre-populated, at the cost of the OS screen-capture indicator staying lit and slightly higher RSS. Off = capture only during a session.
 
@@ -184,6 +186,8 @@ Main thread owns AppKit and the model. Everything that does IPC (WS queries, AX 
 
 `objc2` + `objc2-foundation` / `objc2-app-kit` / `objc2-quartz-core` / `objc2-core-graphics` / `objc2-application-services` + `block2` / `dispatch2`; `screencapturekit` crate for captures; `tray-icon` + `muda` for the menu bar; `serde` + `toml` + `notify` for config; in-house `skylight-sys` for the ~15 private symbols. No webview, no game-engine UI, no async runtime.
 
+Identity: bundle ID `com.maskicoding.oriel`, MIT license.
+
 ## 5.9 Dev workflow
 
 - **Toolchain**: pinned via `rust-toolchain.toml`. Format with stock `rustfmt`; lint with clippy configured in `[workspace.lints.clippy]`, warnings denied (FFI crates get targeted allows, never workspace-wide loosening).
@@ -224,9 +228,71 @@ Each milestone ends with something usable daily. Small commits throughout; comme
 5. RSS within §1 targets after 8 h of normal use.
 6. Losing Screen Recording permission degrades to Icons style with no crash and no nag loop.
 
-## 9. Open questions
+## 9. Decisions log
 
-1. **Gestures** — backlog OK, or do you use a swipe trigger today?
-2. **Config-first v1** — settings via TOML until M5: acceptable, or is a GUI needed earlier?
-3. **macOS 26 minimum** — fine for a personal tool, or should older-OS support be considered?
-4. **Peek and drag-drop** — how much do you actually use these? Affects M4 scope.
+Settled 2026-07-18:
+
+- Gestures: backlog. Config: TOML-only until M5. Minimum OS: macOS 26 only. License: MIT. Bundle ID: `com.maskicoding.oriel`.
+- Peek ships in M4 (off by default); drag-drop stays backlog.
+- Strip is a wrapping grid (~7/row), densifies rather than scrolls, selection wraps at edges.
+- Mid-session trigger of another lens morphs the strip live. Typing in Linger enters Filter. Pause restores the native switcher. Start-at-login defaults on.
+- Summon delay defaults to 0 ms (configurable 0–900).
+
+## 10. Appendix — example config
+
+```toml
+# ~/.config/oriel/config.toml — hot-reloaded on save
+
+summon_delay_ms = 0
+theme = "system"            # light | dark | system
+show_on = "active-screen"   # active-screen | pointer-screen | menubar-screen
+background_capture = true
+start_at_login = true
+menubar_icon = true
+
+[peek]
+enabled = false
+
+[controls]
+arrow_keys = true
+vim_keys = false
+hover_select = false
+cursor_follows_focus = "never"   # never | always | other-screen
+
+[keys]                      # in-session actions, single keys
+focus = "return"
+cancel = "escape"
+close = "w"
+minimize = "m"
+fullscreen = "f"
+quit_app = "q"
+hide_app = "h"
+
+[[lens]]
+trigger = "cmd+tab"
+apps = "all"                # all | active | inactive
+spaces = "all"              # all | visible | hidden
+screens = "all"             # all | strip-screen
+minimized = "show"          # show | end | hide
+hidden = "show"
+fullscreen_windows = "show"
+windowless_apps = "end"
+order = "recent"            # recent | created | alphabetical | space
+group_by_app = false
+style = "gallery"           # gallery | icons | list
+size = "auto"               # small | medium | large | auto
+on_release = "jump"         # jump | linger | filter
+
+[[lens]]
+trigger = "alt+tab"
+apps = "active"
+# unset keys inherit the first lens's values
+
+[[rule]]
+bundle_prefix = "com.parallels."
+pass_triggers = "always"    # never | always | fullscreen
+
+[[rule]]
+bundle_prefix = "com.apple.finder"
+hide_windows = "windowless" # never | always | windowless | title-contains
+```
