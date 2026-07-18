@@ -1,4 +1,13 @@
 fn main() {
+    if !ax::trusted() {
+        println!("accessibility: required — approve the system prompt, then relaunch");
+        ax::request_trust();
+        return;
+    }
+    if !capture::permitted() && !capture::request_permission() {
+        println!("screen recording: not granted — previews and titles disabled");
+    }
+
     let ws = match winsrv::WindowServer::connect() {
         Ok(ws) => ws,
         Err(missing) => {
