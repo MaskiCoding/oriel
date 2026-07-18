@@ -237,6 +237,7 @@ Settled 2026-07-18:
 - Strip is a wrapping grid (~7/row), densifies rather than scrolls, selection wraps at edges.
 - Mid-session trigger of another lens morphs the strip live. Typing in Linger enters Filter. Pause restores the native switcher. Start-at-login defaults on.
 - Summon delay defaults to 0 ms (configurable 0–900).
+- Icon: direction C (overlapping windows, front one amber). Master at `assets/icon.svg`; iconset + menu-bar template generated in M0.
 
 ## 10. Appendix — example config
 
