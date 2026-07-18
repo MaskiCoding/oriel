@@ -184,6 +184,14 @@ Main thread owns AppKit and the model. Everything that does IPC (WS queries, AX 
 
 `objc2` + `objc2-foundation` / `objc2-app-kit` / `objc2-quartz-core` / `objc2-core-graphics` / `objc2-application-services` + `block2` / `dispatch2`; `screencapturekit` crate for captures; `tray-icon` + `muda` for the menu bar; `serde` + `toml` + `notify` for config; in-house `skylight-sys` for the ~15 private symbols. No webview, no game-engine UI, no async runtime.
 
+## 5.9 Dev workflow
+
+- **Toolchain**: pinned via `rust-toolchain.toml`. Format with stock `rustfmt`; lint with clippy configured in `[workspace.lints.clippy]`, warnings denied (FFI crates get targeted allows, never workspace-wide loosening).
+- **`just check`** = `fmt --check` + `clippy -D warnings` + `cargo test` — the gate for every commit, enforced by a repo-committed pre-commit hook (`core.hooksPath`).
+- **CI (GitHub Actions)**: one workflow, triggered on `pull_request` and `push` to `main`. Jobs: lint + pure-crate tests (`model`, `config`) on a Linux runner (cheap, fast), full workspace build + test on a macOS runner (the AppKit/FFI crates only compile there). Green CI = mergeable; there is deliberately no deploy stage — releases are local builds.
+- **Branching**: direct pushes to `main` stay allowed (solo repo); the normal route is branch → PR → squash or rebase merge. Repo is configured to auto-delete head branches on merge, auto-merge enabled, merge commits disabled.
+- **Tests that catch breakage**: every pure resolver (filtering, ordering, matching, shortcut state machine, config parsing) is unit-tested in `model`/`config`; integration smoke test boots the app headless and asserts the native-switcher-restore invariant (§8.4). FFI crates stay logic-free precisely so the untestable surface is minimal.
+
 ## 6. Constraints & risks
 
 | Risk | Mitigation |
