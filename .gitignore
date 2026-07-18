@@ -1,4 +1,32 @@
+# rust
 /target
+
+# macos
 .DS_Store
-*.icns.tmp
+
+# bundle/dist artifacts
 /dist
+*.app
+*.dmg
+*.iconset/
+
+# signing material — never committed
+*.p12
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+
+# env/secrets — belt and braces
+.env
+.env.*
+
+# editors/tools
+.idea/
+.vscode/
+*.swp
+.claude/settings.local.json
+
+# profiling/debug artifacts
+*.trace
+*.memgraph
