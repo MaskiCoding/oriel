@@ -1,2 +1,2 @@
 #!/bin/sh
-exec just check
+exec just lint
