@@ -10,7 +10,7 @@ An oriel is a bay window that projects outward so you can see in every direction
 
 - **Window-level switching.** The unit of switching is the *window*, not the app. Every window from every app, every Space, every screen, in one strip, ordered by global recency of focus.
 - **Muscle-memory first.** Two triggers from day one: `⌘⇥` for everything, `⌥⇥` scoped to the active app. Hold-cycle-release must feel identical to what the fingers already know.
-- **Instant.** Overlay visible within ~100 ms of trigger; a quick flick (press-release under the delay threshold) switches to the previous window with no UI at all.
+- **Instant.** First paint of the strip ≤ 33 ms (~two frames) from keypress. The panel is resident, the window model is always warm, and previews paint from cache — summoning does zero enumeration, zero capture, zero window creation. A quick flick still switches to the previous window without engaging the UI.
 - **Light.** Menu-bar-only resident app. Target: < 40 MB RSS with background capture off, < 120 MB steady-state with live thumbnails on. One process, no helpers.
 - **Free and quiet.** No license checks, no telemetry, no crash-report uploads, no network calls at all. English only.
 
@@ -36,7 +36,7 @@ An oriel is a bay window that projects outward so you can see in every direction
 
 ### 4.1 Session lifecycle
 
-- Hold modifier + press key → session starts. Strip appears after a configurable delay (default 100 ms) so quick flicks stay UI-less.
+- Hold modifier + press key → session starts. Strip appears immediately (apparition delay defaults to **0 ms**; a 0–900 ms slider exists for those who prefer quick flicks to never flash the UI). A flick — release before/at first paint — jumps to the previous window either way.
 - Repeated key presses (and key-repeat) cycle forward; `⇧` cycles backward; once a session is active, the bare trigger key keeps cycling.
 - Release of the held modifier executes the lens's release action (Jump/Linger/Filter). `⏎` focuses, `⎋` cancels, click focuses.
 - Selection restores correct state: focusing a minimized window de-minimizes it; a hidden app unhides; a window on another Space switches Spaces; an app with no windows gets activated/launched.
@@ -88,7 +88,7 @@ Match tiers, best first: exact > prefix > word-boundary prefix (incl. camelCase)
 - **Multi-screen**: show strip on active screen (default) / screen with pointer / screen with menu bar.
 - **Peek**: off by default; when on, selection shows a full-size preview.
 - Titles show window title / app name / both; truncate start/middle/end. State markers and Space badges can be hidden.
-- Animations minimal: apparition delay slider (0–900 ms), optional fade-out. Nothing else moves.
+- Animations minimal: apparition delay slider (0–900 ms, default 0), optional fade-out. Nothing else moves. Nothing ever animates *in*.
 
 ### 4.7 App rules
 
@@ -163,6 +163,7 @@ Record the intended target before step 2 so the resulting activation event bumps
 - Primary: ScreenCaptureKit screenshot API per window (BGRA, cursor off, scaled to tile size; full-res only when Peek is on), on a bounded queue, ≤ 1 capture per window per 200 ms.
 - Minimized and off-Space windows: private `CGSHWCaptureWindowList` (the only thing that can see them).
 - Tile contents are pixel buffers handed straight to layer contents — no CPU-side conversion.
+- **Stale-then-refresh**: summon always paints from cache first (a slightly old preview beats a late one); captures refresh tiles asynchronously after the strip is visible. First paint never blocks on a screenshot.
 - Cache with a hard byte budget; evict least-recently-shown. Drain in-flight captures before exit (prevents OS permission-dialog weirdness).
 
 ### 5.6 UI
@@ -170,6 +171,7 @@ Record the intended target before step 2 so the resulting activation event bumps
 **Decision: the viewport is native AppKit/CoreAnimation, driven from Rust via `objc2`.** The pixels are drawn by the same system frameworks a Swift app would use — Rust is just the language holding the steering wheel. A Swift layer was evaluated and rejected: it adds an FFI boundary, a second toolchain, and a slower iteration loop while producing the identical panel. Fallback if AppKit-from-Rust proves too grindy: `gpui` (its popup window kind is exactly a non-activating panel; Metal-rendered, proven in shipped switcher-like tools) — the crate split above makes `ui/` swappable without touching anything else.
 
 - Strip = `NSPanel`, non-activating style mask, floating, `canJoinAllSpaces` + fullscreen-auxiliary collection behavior, popup-menu window level, clear background over a vibrancy view.
+- **Resident panel**: created once at launch and kept alive; summon = update tiles + order-front, dismiss = order-out. The panel is never torn down or rebuilt on the hot path.
 - Excluded from its own enumeration and capture; re-asserts key status while a session is active; app menu disabled while the panel is key so `⌘Q`-style keys can't hit Oriel itself.
 - Tile grid is a recycled layer tree inside a scroll view; updates batched per transaction.
 
@@ -207,7 +209,7 @@ Each milestone ends with something usable daily. Small commits throughout; comme
 ## 8. Acceptance criteria
 
 1. `⌘⇥` and `⌥⇥` behave per §4.1–§4.3 with zero retraining.
-2. Strip appears ≤ 100 ms after the apparition delay elapses; flick-switch works with the strip never appearing.
+2. First paint ≤ 33 ms from keypress with a warm cache; each subsequent cycle keypress moves the selection within one frame; flick-switch to previous window works at any speed.
 3. Windows on other Spaces and screens: listed, previewed, focusable, with correct Space restore behavior.
 4. Native switcher restored after `kill -9` of Oriel (verified by test).
 5. RSS within §1 targets after 8 h of normal use.
