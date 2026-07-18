@@ -18,7 +18,7 @@ An oriel is a bay window that projects outward so you can see in every direction
 ## Requirements
 
 - macOS 26+
-- Rust (pinned in `rust-toolchain.toml`) and [`just`](https://github.com/casey/just)
+- Rust (pinned in `rust-toolchain.toml`), [`just`](https://github.com/casey/just), and `librsvg` (icon rendering)
 
 ## Developing
 
