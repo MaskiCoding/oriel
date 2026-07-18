@@ -31,4 +31,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+ax = { version = "0.1.0", path = "crates/ax" }
+capture = { version = "0.1.0", path = "crates/capture" }
 winsrv = { path = "crates/winsrv" }
