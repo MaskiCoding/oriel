@@ -24,11 +24,10 @@ An oriel is a bay window that projects outward so you can see in every direction
 
 ```sh
 just hooks   # once: wire the committed pre-commit hook
-just check   # fmt + clippy (warnings denied) + tests — the gate for every commit
+just lint    # fmt + clippy (warnings denied) — runs on every commit
+just check   # lint + tests — what CI runs on every PR and push to main
 just run
 ```
-
-CI runs the same checks on every PR and push to `main`.
 
 ## License
 
