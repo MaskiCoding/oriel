@@ -25,6 +25,9 @@ version = "0.1.0"
 [[package]]
 name = "oriel"
 version = "0.1.0"
+dependencies = [
+ "winsrv",
+]
 
 [[package]]
 name = "skylight-sys"
@@ -37,3 +40,6 @@ version = "0.1.0"
 [[package]]
 name = "winsrv"
 version = "0.1.0"
+dependencies = [
+ "skylight-sys",
+]
