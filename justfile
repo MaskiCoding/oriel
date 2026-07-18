@@ -11,8 +11,16 @@ check: lint
 hooks:
     git config core.hooksPath .githooks
 
+# build + sign the app bundle, then launch it with stdout attached
 run:
-    cargo run
+    ./scripts/mkbundle.sh debug
+    ./dist/Oriel.app/Contents/MacOS/oriel
+
+# release build into /Applications
+install:
+    ./scripts/mkbundle.sh release
+    rm -rf /Applications/Oriel.app
+    ditto dist/Oriel.app /Applications/Oriel.app
 
 # render iconset + menu-bar template into dist/ from the committed svg masters
 icons:
