@@ -164,6 +164,7 @@ Record the intended target before step 2 so the resulting activation event bumps
 - Minimized and off-Space windows: private `CGSHWCaptureWindowList` (the only thing that can see them).
 - Tile contents are pixel buffers handed straight to layer contents — no CPU-side conversion.
 - **Stale-then-refresh**: summon always paints from cache first (a slightly old preview beats a late one); captures refresh tiles asynchronously after the strip is visible. First paint never blocks on a screenshot.
+- **App icons**: read from the system's already-decoded running-app cache (never LaunchServices path lookups or `.icns` decoding), snapshotted once per app at launch-notification time, rasterized at tile size, keyed by bundle ID. Icon work never happens during summon.
 - Cache with a hard byte budget; evict least-recently-shown. Drain in-flight captures before exit (prevents OS permission-dialog weirdness).
 
 ### 5.6 UI
