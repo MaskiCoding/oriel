@@ -29,3 +29,6 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+winsrv = { path = "crates/winsrv" }
