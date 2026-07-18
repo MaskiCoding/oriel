@@ -33,3 +33,4 @@
 
 # derived render previews (source svg is committed)
 docs/*.svg.png
+assets/*.svg.png
