@@ -13,3 +13,7 @@ hooks:
 
 run:
     cargo run
+
+# render iconset + menu-bar template into dist/ from the committed svg masters
+icons:
+    ./scripts/mkicons.sh dist
