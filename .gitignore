@@ -30,3 +30,6 @@
 # profiling/debug artifacts
 *.trace
 *.memgraph
+
+# derived render previews (source svg is committed)
+docs/*.svg.png

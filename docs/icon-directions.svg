@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif">
+  <defs>
+    <linearGradient id="tileDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2f38"/>
+      <stop offset="1" stop-color="#161a20"/>
+    </linearGradient>
+    <linearGradient id="tileLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ecebe6"/>
+    </linearGradient>
+
+    <!-- A · Strip: three tiles, centre one selected -->
+    <symbol id="mark-a" viewBox="0 0 200 200">
+      <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="37" y="86" width="34" height="34" rx="9" stroke="var(--ink)"/>
+        <rect x="129" y="86" width="34" height="34" rx="9" stroke="var(--ink)"/>
+        <rect x="79" y="72" width="42" height="58" rx="11" stroke="var(--accent)"/>
+      </g>
+    </symbol>
+
+    <!-- B · Oriel: one frame, three panes, projecting sill -->
+    <symbol id="mark-b" viewBox="0 0 200 200">
+      <rect x="87" y="58" width="26" height="86" fill="var(--accent)" opacity="0.16"/>
+      <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" stroke="var(--ink)">
+        <path d="M58 64 Q58 50 72 50 H128 Q142 50 142 64 V150 H58 Z"/>
+        <line x1="86" y1="60" x2="86" y2="150"/>
+        <line x1="114" y1="60" x2="114" y2="150"/>
+        <line x1="46" y1="158" x2="154" y2="158"/>
+      </g>
+    </symbol>
+
+    <!-- C · Stack: two windows, front one active -->
+    <symbol id="mark-c" viewBox="0 0 200 200">
+      <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="46" y="50" width="80" height="72" rx="12" stroke="var(--ink)"/>
+        <rect x="78" y="84" width="80" height="72" rx="12" stroke="var(--accent)"/>
+      </g>
+    </symbol>
+  </defs>
+
+  <text x="40" y="42" font-size="24" font-weight="600" fill="#3b3f46">Oriel — icon directions</text>
+  <text x="40" y="66" font-size="14" fill="#9a9ea6">monoline, rounded joins · one accent (amber, glass catching light)</text>
+
+  <!-- Row 1: dark tiles -->
+  <g>
+    <g transform="translate(110,96)">
+      <rect width="200" height="200" rx="46" fill="url(#tileDark)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+      <use href="#mark-a" width="200" height="200" style="--ink:#f4f4f2;--accent:#ecba52"/>
+    </g>
+    <g transform="translate(370,96)">
+      <rect width="200" height="200" rx="46" fill="url(#tileDark)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+      <use href="#mark-b" width="200" height="200" style="--ink:#f4f4f2;--accent:#ecba52"/>
+    </g>
+    <g transform="translate(630,96)">
+      <rect width="200" height="200" rx="46" fill="url(#tileDark)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+      <use href="#mark-c" width="200" height="200" style="--ink:#f4f4f2;--accent:#ecba52"/>
+    </g>
+  </g>
+
+  <!-- Row 2: light tiles -->
+  <g>
+    <g transform="translate(110,320)">
+      <rect width="200" height="200" rx="46" fill="url(#tileLight)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#000000" stroke-opacity="0.07"/>
+      <use href="#mark-a" width="200" height="200" style="--ink:#22262d;--accent:#b47a12"/>
+    </g>
+    <g transform="translate(370,320)">
+      <rect width="200" height="200" rx="46" fill="url(#tileLight)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#000000" stroke-opacity="0.07"/>
+      <use href="#mark-b" width="200" height="200" style="--ink:#22262d;--accent:#b47a12"/>
+    </g>
+    <g transform="translate(630,320)">
+      <rect width="200" height="200" rx="46" fill="url(#tileLight)"/>
+      <rect width="200" height="200" rx="46" fill="none" stroke="#000000" stroke-opacity="0.07"/>
+      <use href="#mark-c" width="200" height="200" style="--ink:#22262d;--accent:#b47a12"/>
+    </g>
+  </g>
+
+  <text x="210" y="548" font-size="16" font-weight="600" fill="#3b3f46" text-anchor="middle">A · Strip</text>
+  <text x="210" y="570" font-size="12.5" fill="#9a9ea6" text-anchor="middle">the switcher itself</text>
+  <text x="470" y="548" font-size="16" font-weight="600" fill="#3b3f46" text-anchor="middle">B · Oriel</text>
+  <text x="470" y="570" font-size="12.5" fill="#9a9ea6" text-anchor="middle">the namesake bay window</text>
+  <text x="730" y="548" font-size="16" font-weight="600" fill="#3b3f46" text-anchor="middle">C · Stack</text>
+  <text x="730" y="570" font-size="12.5" fill="#9a9ea6" text-anchor="middle">windows, front one active</text>
+
+  <!-- Menu-bar monochrome preview -->
+  <g transform="translate(0,600)">
+    <rect x="110" y="0" width="720" height="52" rx="12" fill="#2a2d33"/>
+    <text x="134" y="31" font-size="13" fill="#8a8f98">menu bar · monochrome template</text>
+    <use href="#mark-a" x="560" y="11" width="30" height="30" style="--ink:#e9e9e7;--accent:#e9e9e7"/>
+    <use href="#mark-b" x="650" y="11" width="30" height="30" style="--ink:#e9e9e7;--accent:#e9e9e7"/>
+    <use href="#mark-c" x="740" y="11" width="30" height="30" style="--ink:#e9e9e7;--accent:#e9e9e7"/>
+  </g>
+</svg>
