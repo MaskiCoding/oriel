@@ -36,6 +36,10 @@ fn main() {
             strip_demo();
             return;
         }
+        Some("--hotkey-log") if cfg!(debug_assertions) => {
+            hotkey_log();
+            return;
+        }
         _ => {}
     }
 
@@ -77,6 +81,35 @@ fn main() {
             w.title.as_deref().unwrap_or(""),
         );
     }
+}
+
+#[cfg(debug_assertions)]
+fn hotkey_log() {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+    let triggers = [
+        (1, input::CMD),
+        (2, input::CMD | input::SHIFT),
+        (3, input::OPTION),
+        (4, input::OPTION | input::SHIFT),
+    ]
+    .map(|(id, modifiers)| input::Trigger {
+        id,
+        key: input::KEY_TAB,
+        modifiers,
+    });
+
+    let hotkeys = input::Hotkeys::register(&triggers, |id| println!("hotkey {id}"));
+    if hotkeys.is_none() {
+        println!("hotkey-log: registration failed");
+        return;
+    }
+    println!("hotkey-log: registered — ctrl-c to stop");
+    app.run();
 }
 
 #[cfg(debug_assertions)]
