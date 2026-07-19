@@ -76,4 +76,6 @@ skylight! {
     SLSWindowIteratorGetAttributes: fn(CFTypeRef) -> u64;
     SLSWindowIteratorGetLevel: fn(CFTypeRef) -> c_int;
     SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
+    CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
+    CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
 }
