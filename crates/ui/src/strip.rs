@@ -123,17 +123,15 @@ impl Strip {
     /// Moves the highlight to `index` by recoloring two tiles — the cheap path
     /// taken on every cycle, so it keeps pace with key-repeat.
     pub fn select(&self, index: usize) {
-        if index == self.selected.get() {
+        let labels = self.labels.borrow();
+        if index >= labels.len() || index == self.selected.get() {
             return;
         }
-        let labels = self.labels.borrow();
         if let Some(old) = labels.get(self.selected.get()) {
             old.setBackgroundColor(Some(&NSColor::clearColor()));
         }
-        if let Some(new) = labels.get(index) {
-            new.setBackgroundColor(Some(&NSColor::controlAccentColor()));
-            self.selected.set(index);
-        }
+        labels[index].setBackgroundColor(Some(&NSColor::controlAccentColor()));
+        self.selected.set(index);
     }
 
     pub fn hide(&self) {

@@ -89,8 +89,8 @@ impl App {
             let backward = input::flags(event).contains(CGEventFlags::MaskShift);
             if let Some(live) = &mut self.session {
                 live.selection.cycle(backward);
+                self.strip.select(live.selection.selected());
             }
-            self.render();
             input::Disposition::Swallow
         } else if code == i64::from(input::KEY_ESCAPE) {
             self.session = None;
