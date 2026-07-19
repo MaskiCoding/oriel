@@ -104,6 +104,14 @@ fn strip_demo() {
         ("Terminal", "~/src/oriel"),
         ("Notes", "Groceries"),
         ("Music", "Now Playing"),
+        ("Mail", "Inbox"),
+        ("Calendar", "Today"),
+        ("Maps", "Home"),
+        ("Photos", "Library"),
+        ("Preview", "receipt.pdf"),
+        ("Xcode", "AppDelegate"),
+        ("Slack", "general"),
+        ("Reminders", "Buy milk"),
     ]
     .iter()
     .map(|(a, t)| ui::Tile {
