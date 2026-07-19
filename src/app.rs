@@ -7,6 +7,36 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType};
 
+/// Runs `work` on the next main-run-loop turn. The `WindowServer` ignores an
+/// activation attempted from inside the hot-key handler that consumed the
+/// triggering event, so the focus jump is deferred out of that context.
+fn on_next_turn(work: impl FnOnce() + 'static) {
+    use core::ffi::c_void;
+    #[repr(C)]
+    struct Queue([u8; 0]);
+    unsafe extern "C" {
+        static _dispatch_main_q: Queue;
+        fn dispatch_async_f(
+            queue: *const Queue,
+            context: *mut c_void,
+            work: unsafe extern "C" fn(*mut c_void),
+        );
+    }
+    unsafe extern "C" fn call(ctx: *mut c_void) {
+        let work: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx.cast()) };
+        // `call` is plain `extern "C"`, so a panic must not unwind into libdispatch.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+    }
+    let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
+    unsafe {
+        dispatch_async_f(
+            &raw const _dispatch_main_q,
+            Box::into_raw(boxed).cast(),
+            call,
+        );
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Modifier {
     Command,
@@ -40,11 +70,14 @@ struct Live {
 /// run to completion on the one main run loop, so the borrows never overlap —
 /// this holds only while no method here spins a nested run loop (e.g. a modal).
 struct App {
-    ws: winsrv::WindowServer,
+    ws: Rc<winsrv::WindowServer>,
     strip: ui::Strip,
     session: Option<Live>,
     /// The in-session key tap, enabled only while a session is open.
     keys: Option<input::TapHandle>,
+    /// Last modifier flags seen by the flags tap, kept current even between
+    /// sessions so `trigger` can tell whether the trigger key is still down.
+    held: CGEventFlags,
 }
 
 impl App {
@@ -73,8 +106,16 @@ impl App {
             selection,
             trigger: modifier,
         });
-        self.set_keys_enabled(true);
-        self.render();
+
+        // Hot-key dispatch lags the flags tap, so the trigger modifier may
+        // already be up by now — a flick too quick to leave a release event.
+        // Jump straight away without ever showing the strip in that case.
+        if modifier.held(self.held) {
+            self.set_keys_enabled(true);
+            self.render();
+        } else {
+            self.jump();
+        }
     }
 
     /// A key was pressed while a session is open: Tab (and its auto-repeats)
@@ -102,19 +143,32 @@ impl App {
         }
     }
 
-    /// Modifier flags changed: if the trigger modifier is no longer held,
-    /// jump to the selection and end the session.
+    /// Modifier flags changed: track the live state, and if a session is open
+    /// and its trigger modifier is no longer held, jump to the selection.
     fn flags_changed(&mut self, flags: CGEventFlags) {
+        self.held = flags;
         let Some(live) = &self.session else { return };
-        if live.trigger.held(flags) {
+        if !live.trigger.held(flags) {
+            self.jump();
+        }
+    }
+
+    /// Ends the session and focuses the current selection. The focus is
+    /// deferred to the next run-loop turn so it lands outside the event handler
+    /// that triggered it — the `WindowServer` ignores it otherwise.
+    fn jump(&mut self) {
+        let Some(live) = self.session.take() else {
             return;
-        }
-        let live = self.session.take().expect("checked above");
-        if let Some(target) = live.candidates.get(live.selection.selected()) {
-            self.ws.focus_window(target.pid, target.wid);
-        }
+        };
         self.strip.hide();
         self.set_keys_enabled(false);
+        if let Some(target) = live.candidates.get(live.selection.selected()) {
+            let ws = self.ws.clone();
+            let (pid, wid) = (target.pid, target.wid);
+            on_next_turn(move || {
+                ws.focus_window(pid, wid);
+            });
+        }
     }
 
     fn set_keys_enabled(&self, enabled: bool) {
@@ -172,10 +226,11 @@ pub fn run(mtm: MainThreadMarker) {
     };
     let strip = ui::Strip::new(mtm);
     let app = Rc::new(RefCell::new(App {
-        ws,
+        ws: Rc::new(ws),
         strip,
         session: None,
         keys: None,
+        held: CGEventFlags::empty(),
     }));
 
     let triggers = [
