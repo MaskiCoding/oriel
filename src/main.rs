@@ -1,4 +1,29 @@
 fn main() {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some(flag) if flag == input::WATCHDOG_FLAG => {
+            match args.next().and_then(|p| p.parse().ok()) {
+                Some(parent) => input::watchdog_main(parent),
+                None => std::process::exit(2),
+            }
+        }
+        Some("--suppress-and-hang") if cfg!(debug_assertions) => {
+            let suppression = input::Suppression::engage();
+            println!(
+                "{}",
+                if suppression.is_some() {
+                    "engaged"
+                } else {
+                    "engage-failed"
+                }
+            );
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        _ => {}
+    }
+
     if !ax::trusted() {
         println!("accessibility: required — approve the system prompt, then relaunch");
         ax::request_trust();

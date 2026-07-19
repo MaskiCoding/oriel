@@ -33,4 +33,8 @@ workspace = true
 [dependencies]
 ax = { version = "0.1.0", path = "crates/ax" }
 capture = { version = "0.1.0", path = "crates/capture" }
+input = { version = "0.1.0", path = "crates/input" }
 winsrv = { path = "crates/winsrv" }
+
+[dev-dependencies]
+skylight-sys = { path = "crates/skylight-sys" }
