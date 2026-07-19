@@ -1,5 +1,7 @@
 //! `WindowServer` integration: enumeration, batched state queries, event tap, Space topology.
 
+mod focus;
+
 use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
 
