@@ -28,6 +28,10 @@ fn main() {
             println!("focus {wid} pid {pid}: {}", ws.focus_window(pid, wid));
             return;
         }
+        Some("--tap-log") if cfg!(debug_assertions) => {
+            tap_log();
+            return;
+        }
         _ => {}
     }
 
@@ -69,4 +73,30 @@ fn main() {
             w.title.as_deref().unwrap_or(""),
         );
     }
+}
+
+#[cfg(debug_assertions)]
+fn tap_log() {
+    use objc2_core_foundation::CFRunLoop;
+    use objc2_core_graphics::CGEventType;
+
+    let mask = input::event_mask(&[CGEventType::KeyDown, CGEventType::FlagsChanged]);
+    let tap = input::EventTap::install(
+        objc2_core_graphics::CGEventTapOptions::ListenOnly,
+        mask,
+        |ty, event| {
+            match ty {
+                CGEventType::KeyDown => println!("keydown {}", input::keycode(event)),
+                CGEventType::FlagsChanged => println!("flags {:#x}", input::flags(event).0),
+                _ => {}
+            }
+            input::Disposition::Keep
+        },
+    );
+    if tap.is_none() {
+        println!("tap-log: install failed (accessibility not granted to this binary)");
+        return;
+    }
+    println!("tap-log: listening — ctrl-c to stop");
+    CFRunLoop::run();
 }
