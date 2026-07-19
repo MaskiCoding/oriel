@@ -1,7 +1,7 @@
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSPanel, NSPopUpMenuWindowLevel, NSTextField, NSView,
+    NSBackingStoreType, NSColor, NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSTextField, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
@@ -17,6 +17,26 @@ const TILE_W: f64 = 168.0;
 const TILE_H: f64 = 84.0;
 const GAP: f64 = 12.0;
 const PAD: f64 = 16.0;
+/// Cap on tiles per row before wrapping, matching the PRD's ~7/row target.
+const MAX_COLS: usize = 7;
+
+fn as_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Tiles per row: as many as fit in `max_content` width, capped at `MAX_COLS`,
+/// never more than the tile count. The rest wrap onto further rows.
+fn columns(count: usize, max_content: f64) -> usize {
+    let mut cols = 1;
+    while cols < count && cols < MAX_COLS {
+        let width = as_f64(cols + 1).mul_add(TILE_W, as_f64(cols) * GAP);
+        if width > max_content {
+            break;
+        }
+        cols += 1;
+    }
+    cols
+}
 
 /// The resident overlay panel. Created once and kept alive; `show` updates the
 /// tiles and orders it front, `hide` orders it out — never rebuilt.
@@ -53,30 +73,39 @@ impl Strip {
         Self { mtm, panel, effect }
     }
 
-    /// Replaces the tiles, sizes and centers the panel, and orders it front
-    /// without activating Oriel.
+    /// Replaces the tiles in a wrapping grid that always fits the screen,
+    /// sizes and centers the panel, and orders it front without activating
+    /// Oriel.
     pub fn show(&self, tiles: &[Tile], selected: usize) {
         for sub in &self.effect.subviews() {
             sub.removeFromSuperview();
         }
 
-        let n = f64::from(u32::try_from(tiles.len().max(1)).unwrap_or(u32::MAX));
-        let width = 2.0f64.mul_add(PAD, n * TILE_W + (n - 1.0) * GAP);
-        let height = 2.0f64.mul_add(PAD, TILE_H);
+        let count = tiles.len().max(1);
+        let cols = columns(count, self.screen_width() * 0.92 - 2.0 * PAD);
+        let rows = count.div_ceil(cols);
+
+        let width = as_f64(cols).mul_add(TILE_W, as_f64(cols - 1) * GAP + 2.0 * PAD);
+        let height = as_f64(rows).mul_add(TILE_H, as_f64(rows - 1) * GAP + 2.0 * PAD);
         self.panel.setContentSize(NSSize::new(width, height));
 
         for (i, tile) in tiles.iter().enumerate() {
-            let x = (TILE_W + GAP).mul_add(f64::from(u32::try_from(i).unwrap_or(u32::MAX)), PAD);
+            let col = i % cols;
+            let row = i / cols;
+            let x = (TILE_W + GAP).mul_add(as_f64(col), PAD);
+            // NSView is bottom-left origin, so the top row sits at the largest y.
+            let y = (TILE_H + GAP).mul_add(as_f64(rows - 1 - row), PAD);
             let view = self.tile(tile, i == selected);
-            view.setFrame(NSRect::new(
-                NSPoint::new(x, PAD),
-                NSSize::new(TILE_W, TILE_H),
-            ));
+            view.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(TILE_W, TILE_H)));
             self.effect.addSubview(&view);
         }
 
         self.panel.center();
         self.panel.orderFrontRegardless();
+    }
+
+    fn screen_width(&self) -> f64 {
+        NSScreen::mainScreen(self.mtm).map_or(1440.0, |s| s.frame().size.width)
     }
 
     pub fn hide(&self) {
@@ -96,5 +125,24 @@ impl Strip {
         label.setBackgroundColor(Some(&bg));
         label.setTextColor(Some(&NSColor::labelColor()));
         Retained::into_super(Retained::into_super(label))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_fit_within_width_and_cap() {
+        // one tile → one column
+        assert_eq!(columns(1, 10_000.0), 1);
+        // plenty of width but capped at MAX_COLS
+        assert_eq!(columns(20, 10_000.0), MAX_COLS);
+        // never more columns than tiles
+        assert_eq!(columns(3, 10_000.0), 3);
+        // narrow width forces fewer columns
+        assert_eq!(columns(10, TILE_W + TILE_W + GAP), 2);
+        // width for less than one tile still yields one column
+        assert_eq!(columns(5, 10.0), 1);
     }
 }

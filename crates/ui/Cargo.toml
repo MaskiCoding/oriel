@@ -25,6 +25,7 @@ features = [
     "NSGraphics",
     "NSPanel",
     "NSResponder",
+    "NSScreen",
     "NSTextField",
     "NSView",
     "NSVisualEffectView",
