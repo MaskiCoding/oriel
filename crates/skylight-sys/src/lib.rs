@@ -3,12 +3,20 @@
 //! killing the process at load. Zero logic beyond resolution.
 
 #![allow(non_snake_case)]
+#![allow(clippy::pub_underscore_fields)] // fields are named exactly after the symbols they hold
 
 use core::ffi::{c_char, c_int, c_void};
 
 pub type CFTypeRef = *const c_void;
 pub type CFArrayRef = *const c_void;
 pub type CFStringRef = *const c_void;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Psn {
+    pub hi: u32,
+    pub lo: u32,
+}
 
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
@@ -78,4 +86,6 @@ skylight! {
     SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
     CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
     CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
+    _SLPSSetFrontProcessWithOptions: fn(*const Psn, u32, u32) -> c_int;
+    SLPSPostEventRecordTo: fn(*const Psn, *const u8) -> c_int;
 }
