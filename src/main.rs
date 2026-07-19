@@ -27,7 +27,9 @@ fn main() {
             let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             let ws = winsrv::WindowServer::connect().expect("windowserver");
-            println!("focus {wid} pid {pid}: {}", ws.focus_window(pid, wid));
+            let fronted = ws.focus_window(pid, wid);
+            let raised = ax::raise_window(pid, wid);
+            println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
             return;
         }
         Some("--tap-log") if cfg!(debug_assertions) => {
