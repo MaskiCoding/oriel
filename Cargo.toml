@@ -34,6 +34,8 @@ workspace = true
 ax = { version = "0.1.0", path = "crates/ax" }
 capture = { version = "0.1.0", path = "crates/capture" }
 input = { version = "0.1.0", path = "crates/input" }
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
 winsrv = { path = "crates/winsrv" }
 
 [dev-dependencies]
