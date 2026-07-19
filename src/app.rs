@@ -53,7 +53,8 @@ fn focus_with_retry(f: &Focus, pid: i32, wid: u32, attempts_left: u32) {
     if f.generation.get() != f.stamp {
         return;
     }
-    if f.ws.focus_window(pid, wid) || attempts_left == 0 {
+    f.ws.focus_window(pid, wid);
+    if ax::raise_window(pid, wid) || attempts_left == 0 {
         return;
     }
     let f = f.clone();
@@ -114,6 +115,9 @@ struct App {
     held: CGEventFlags,
     /// Bumped on every jump; a retry chain stops once it no longer matches.
     generation: Rc<Cell<u32>>,
+    /// Our own most-recently-focused order, since the `WindowServer` stacking
+    /// query is unreliable for it.
+    mru: model::Mru,
 }
 
 impl App {
@@ -206,6 +210,7 @@ impl App {
                 stamp,
             };
             let (pid, wid) = (target.pid, target.wid);
+            self.mru.touch(model::WindowId(wid));
             on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
         }
     }
@@ -216,16 +221,30 @@ impl App {
         }
     }
 
-    fn enumerate(&self, modifier: Modifier) -> Vec<Candidate> {
+    fn enumerate(&mut self, modifier: Modifier) -> Vec<Candidate> {
         let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
         let mut windows = self.ws.windows(&space_ids);
         windows.retain(|w| w.level == 0);
+
+        // Order by our own recency, not the WindowServer stacking query, which
+        // stops reflecting focus after a couple of switches.
+        let ids: Vec<model::WindowId> = windows.iter().map(|w| model::WindowId(w.wid)).collect();
+        self.mru.sync(&ids);
+        let mut by_wid: std::collections::HashMap<u32, winsrv::WindowInfo> =
+            windows.into_iter().map(|w| (w.wid, w)).collect();
+        let mut ordered: Vec<winsrv::WindowInfo> = self
+            .mru
+            .order()
+            .iter()
+            .filter_map(|id| by_wid.remove(&id.0))
+            .collect();
+
         if modifier == Modifier::Option
-            && let Some(front) = windows.first().map(|w| w.pid)
+            && let Some(front) = ordered.first().map(|w| w.pid)
         {
-            windows.retain(|w| w.pid == front);
+            ordered.retain(|w| w.pid == front);
         }
-        windows
+        ordered
             .into_iter()
             .map(|w| Candidate {
                 pid: w.pid,
@@ -271,6 +290,7 @@ pub fn run(mtm: MainThreadMarker) {
         keys: None,
         held: CGEventFlags::empty(),
         generation: Rc::new(Cell::new(0)),
+        mru: model::Mru::default(),
     }));
 
     let triggers = [
