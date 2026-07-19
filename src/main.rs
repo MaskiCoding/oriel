@@ -32,6 +32,10 @@ fn main() {
             tap_log();
             return;
         }
+        Some("--strip-demo") if cfg!(debug_assertions) => {
+            strip_demo();
+            return;
+        }
         _ => {}
     }
 
@@ -73,6 +77,33 @@ fn main() {
             w.title.as_deref().unwrap_or(""),
         );
     }
+}
+
+#[cfg(debug_assertions)]
+fn strip_demo() {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+    let tiles: Vec<ui::Tile> = [
+        ("Finder", "Downloads"),
+        ("Safari", "Apple"),
+        ("Terminal", "~/src/oriel"),
+        ("Notes", "Groceries"),
+        ("Music", "Now Playing"),
+    ]
+    .iter()
+    .map(|(a, t)| ui::Tile {
+        app: (*a).to_string(),
+        title: (*t).to_string(),
+    })
+    .collect();
+
+    let strip = ui::Strip::new(mtm);
+    strip.show(&tiles, 1);
+    app.run();
 }
 
 #[cfg(debug_assertions)]
