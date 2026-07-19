@@ -1,22 +1,25 @@
 //! The M1 loop: hold a trigger, cycle with taps, release to jump.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType};
 
-/// Runs `work` on the next main-run-loop turn. The `WindowServer` ignores an
-/// activation attempted from inside the hot-key handler that consumed the
-/// triggering event, so the focus jump is deferred out of that context.
-fn on_next_turn(work: impl FnOnce() + 'static) {
+/// Runs `work` on the main run loop after `delay_ms`, outside the current event
+/// handler. Focus can't be done from inside the hot-key handler that consumed
+/// the triggering event (the `WindowServer` ignores it), and the `WindowServer`
+/// also needs a moment to settle after the event before it accepts one.
+fn on_main_after(delay_ms: u64, work: impl FnOnce() + 'static) {
     use core::ffi::c_void;
     #[repr(C)]
     struct Queue([u8; 0]);
     unsafe extern "C" {
         static _dispatch_main_q: Queue;
-        fn dispatch_async_f(
+        fn dispatch_time(when: u64, delta: i64) -> u64;
+        fn dispatch_after_f(
+            when: u64,
             queue: *const Queue,
             context: *mut c_void,
             work: unsafe extern "C" fn(*mut c_void),
@@ -28,13 +31,44 @@ fn on_next_turn(work: impl FnOnce() + 'static) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
     }
     let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
+    let nanos = i64::try_from(delay_ms)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000_000);
     unsafe {
-        dispatch_async_f(
+        let when = dispatch_time(0, nanos);
+        dispatch_after_f(
+            when,
             &raw const _dispatch_main_q,
             Box::into_raw(boxed).cast(),
             call,
         );
     }
+}
+
+/// Focuses `wid`, retrying on failure — the `WindowServer` often rejects the
+/// first activation after an event and accepts a slightly later one. Bails if a
+/// newer jump has bumped `generation`, so a stale retry can't front a window
+/// the user has already switched away from.
+fn focus_with_retry(f: &Focus, pid: i32, wid: u32, attempts_left: u32) {
+    if f.generation.get() != f.stamp {
+        return;
+    }
+    if f.ws.focus_window(pid, wid) || attempts_left == 0 {
+        return;
+    }
+    let f = f.clone();
+    on_main_after(40, move || {
+        focus_with_retry(&f, pid, wid, attempts_left - 1);
+    });
+}
+
+/// What a retry chain needs: the `WindowServer`, plus a generation stamp to
+/// tell whether this jump is still the current one.
+#[derive(Clone)]
+struct Focus {
+    ws: Rc<winsrv::WindowServer>,
+    generation: Rc<Cell<u32>>,
+    stamp: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -78,6 +112,8 @@ struct App {
     /// Last modifier flags seen by the flags tap, kept current even between
     /// sessions so `trigger` can tell whether the trigger key is still down.
     held: CGEventFlags,
+    /// Bumped on every jump; a retry chain stops once it no longer matches.
+    generation: Rc<Cell<u32>>,
 }
 
 impl App {
@@ -153,21 +189,24 @@ impl App {
         }
     }
 
-    /// Ends the session and focuses the current selection. The focus is
-    /// deferred to the next run-loop turn so it lands outside the event handler
-    /// that triggered it — the `WindowServer` ignores it otherwise.
+    /// Ends the session and focuses the current selection, deferred briefly so
+    /// the focus lands after the triggering event settles (see `on_main_after`).
     fn jump(&mut self) {
         let Some(live) = self.session.take() else {
             return;
         };
         self.strip.hide();
         self.set_keys_enabled(false);
+        let stamp = self.generation.get().wrapping_add(1);
+        self.generation.set(stamp);
         if let Some(target) = live.candidates.get(live.selection.selected()) {
-            let ws = self.ws.clone();
+            let focus = Focus {
+                ws: self.ws.clone(),
+                generation: self.generation.clone(),
+                stamp,
+            };
             let (pid, wid) = (target.pid, target.wid);
-            on_next_turn(move || {
-                ws.focus_window(pid, wid);
-            });
+            on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
         }
     }
 
@@ -231,6 +270,7 @@ pub fn run(mtm: MainThreadMarker) {
         session: None,
         keys: None,
         held: CGEventFlags::empty(),
+        generation: Rc::new(Cell::new(0)),
     }));
 
     let triggers = [
