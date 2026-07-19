@@ -132,6 +132,22 @@ impl EventTap {
             ctx,
         })
     }
+
+    /// A cheap handle for enabling and disabling this tap from elsewhere. It
+    /// borrows nothing from the tap's closure, so holding one alongside the
+    /// callback's own captures cannot form a reference cycle.
+    pub fn handle(&self) -> TapHandle {
+        TapHandle(self.port.clone())
+    }
+}
+
+/// Enables or disables an installed [`EventTap`] without owning it.
+pub struct TapHandle(CFRetained<CFMachPort>);
+
+impl TapHandle {
+    pub fn set_enabled(&self, enabled: bool) {
+        CGEvent::tap_enable(&self.0, enabled);
+    }
 }
 
 impl Drop for EventTap {
