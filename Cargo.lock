@@ -45,6 +45,9 @@ dependencies = [
 [[package]]
 name = "input"
 version = "0.1.0"
+dependencies = [
+ "skylight-sys",
+]
 
 [[package]]
 name = "libc"
@@ -90,6 +93,8 @@ version = "0.1.0"
 dependencies = [
  "ax",
  "capture",
+ "input",
+ "skylight-sys",
  "winsrv",
 ]
 
