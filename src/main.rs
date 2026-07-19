@@ -21,6 +21,13 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
+        Some("--focus") if cfg!(debug_assertions) => {
+            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let ws = winsrv::WindowServer::connect().expect("windowserver");
+            println!("focus {wid} pid {pid}: {}", ws.focus_window(pid, wid));
+            return;
+        }
         _ => {}
     }
 
