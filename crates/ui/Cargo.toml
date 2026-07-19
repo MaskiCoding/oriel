@@ -8,3 +8,25 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+objc2 = "0.6.4"
+objc2-core-foundation = "0.3.2"
+
+[dependencies.objc2-foundation]
+version = "0.3.2"
+features = ["NSString", "NSGeometry"]
+
+[dependencies.objc2-app-kit]
+version = "0.3.2"
+features = [
+    "NSColor",
+    "NSControl",
+    "NSGraphics",
+    "NSPanel",
+    "NSResponder",
+    "NSTextField",
+    "NSView",
+    "NSVisualEffectView",
+    "NSWindow",
+]
