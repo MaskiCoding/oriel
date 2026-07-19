@@ -1,5 +1,9 @@
 //! Safe RAII wrapper over the C Accessibility API.
 
+mod raise;
+
+pub use raise::raise_window;
+
 use core::ffi::c_void;
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFString, kCFBooleanTrue};
