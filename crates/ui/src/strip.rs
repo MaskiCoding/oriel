@@ -1,7 +1,9 @@
+use std::cell::{Cell, RefCell};
+
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSTextField, NSView,
+    NSBackingStoreType, NSColor, NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSTextField,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
@@ -38,12 +40,15 @@ fn columns(count: usize, max_content: f64) -> usize {
     cols
 }
 
-/// The resident overlay panel. Created once and kept alive; `show` updates the
-/// tiles and orders it front, `hide` orders it out — never rebuilt.
+/// The resident overlay panel. Created once and kept alive: `show` builds the
+/// tile grid and orders it front, `select` moves the highlight without
+/// rebuilding, `hide` orders it out.
 pub struct Strip {
     mtm: MainThreadMarker,
     panel: Retained<NSPanel>,
     effect: Retained<NSVisualEffectView>,
+    labels: RefCell<Vec<Retained<NSTextField>>>,
+    selected: Cell<usize>,
 }
 
 impl Strip {
@@ -70,15 +75,21 @@ impl Strip {
         effect.setState(NSVisualEffectState::Active);
         panel.setContentView(Some(&effect));
 
-        Self { mtm, panel, effect }
+        Self {
+            mtm,
+            panel,
+            effect,
+            labels: RefCell::new(Vec::new()),
+            selected: Cell::new(0),
+        }
     }
 
-    /// Replaces the tiles in a wrapping grid that always fits the screen,
-    /// sizes and centers the panel, and orders it front without activating
-    /// Oriel.
+    /// Builds the tiles in a wrapping grid that always fits the screen, sizes
+    /// and centers the panel, highlights `selected`, and orders it front
+    /// without activating Oriel.
     pub fn show(&self, tiles: &[Tile], selected: usize) {
-        for sub in &self.effect.subviews() {
-            sub.removeFromSuperview();
+        for old in self.labels.borrow().iter() {
+            old.removeFromSuperview();
         }
 
         let count = tiles.len().max(1);
@@ -89,42 +100,58 @@ impl Strip {
         let height = as_f64(rows).mul_add(TILE_H, as_f64(rows - 1) * GAP + 2.0 * PAD);
         self.panel.setContentSize(NSSize::new(width, height));
 
+        let mut labels = Vec::with_capacity(tiles.len());
         for (i, tile) in tiles.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
             let x = (TILE_W + GAP).mul_add(as_f64(col), PAD);
             // NSView is bottom-left origin, so the top row sits at the largest y.
             let y = (TILE_H + GAP).mul_add(as_f64(rows - 1 - row), PAD);
-            let view = self.tile(tile, i == selected);
-            view.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(TILE_W, TILE_H)));
-            self.effect.addSubview(&view);
+            let label = self.label(tile);
+            label.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(TILE_W, TILE_H)));
+            self.effect.addSubview(&label);
+            labels.push(label);
         }
+        self.labels.replace(labels);
+        self.selected.set(usize::MAX);
+        self.select(selected);
 
         self.panel.center();
         self.panel.orderFrontRegardless();
     }
 
-    fn screen_width(&self) -> f64 {
-        NSScreen::mainScreen(self.mtm).map_or(1440.0, |s| s.frame().size.width)
+    /// Moves the highlight to `index` by recoloring two tiles — the cheap path
+    /// taken on every cycle, so it keeps pace with key-repeat.
+    pub fn select(&self, index: usize) {
+        if index == self.selected.get() {
+            return;
+        }
+        let labels = self.labels.borrow();
+        if let Some(old) = labels.get(self.selected.get()) {
+            old.setBackgroundColor(Some(&NSColor::clearColor()));
+        }
+        if let Some(new) = labels.get(index) {
+            new.setBackgroundColor(Some(&NSColor::controlAccentColor()));
+            self.selected.set(index);
+        }
     }
 
     pub fn hide(&self) {
         self.panel.orderOut(None);
     }
 
-    fn tile(&self, tile: &Tile, selected: bool) -> Retained<NSView> {
+    fn screen_width(&self) -> f64 {
+        NSScreen::mainScreen(self.mtm).map_or(1440.0, |s| s.frame().size.width)
+    }
+
+    fn label(&self, tile: &Tile) -> Retained<NSTextField> {
         let text = NSString::from_str(&format!("{}\n{}", tile.app, tile.title));
         let label = NSTextField::labelWithString(&text, self.mtm);
         label.setMaximumNumberOfLines(2);
         label.setDrawsBackground(true);
-        let bg = if selected {
-            NSColor::controlAccentColor()
-        } else {
-            NSColor::clearColor()
-        };
-        label.setBackgroundColor(Some(&bg));
+        label.setBackgroundColor(Some(&NSColor::clearColor()));
         label.setTextColor(Some(&NSColor::labelColor()));
-        Retained::into_super(Retained::into_super(label))
+        label
     }
 }
 
