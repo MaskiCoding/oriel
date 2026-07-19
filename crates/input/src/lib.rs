@@ -4,6 +4,6 @@ mod hotkey;
 mod suppress;
 mod tap;
 
-pub use hotkey::{CMD, Hotkeys, KEY_TAB, OPTION, SHIFT, Trigger};
+pub use hotkey::{CMD, Hotkeys, KEY_ESCAPE, KEY_TAB, OPTION, SHIFT, Trigger};
 pub use suppress::{Suppression, WATCHDOG_FLAG, watchdog_main};
-pub use tap::{Disposition, EventTap, event_mask, flags, keycode};
+pub use tap::{Disposition, EventTap, TapHandle, event_mask, flags, keycode};

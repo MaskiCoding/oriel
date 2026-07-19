@@ -70,6 +70,7 @@ pub const CMD: u32 = 1 << 8;
 pub const SHIFT: u32 = 1 << 9;
 pub const OPTION: u32 = 1 << 11;
 pub const KEY_TAB: u32 = 48;
+pub const KEY_ESCAPE: u32 = 53;
 
 /// One trigger to bind: a key + modifier flags, tagged with the `id` reported
 /// back when it fires.
