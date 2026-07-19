@@ -43,12 +43,17 @@ struct App {
     ws: winsrv::WindowServer,
     strip: ui::Strip,
     session: Option<Live>,
+    /// The in-session key tap, enabled only while a session is open.
+    keys: Option<input::TapHandle>,
 }
 
 impl App {
-    /// A trigger hot key fired: open a session on the first press, or move the
-    /// selection on a repeat press while the modifier is still held.
+    /// A trigger hot key fired. Opens a session on the first press; once open,
+    /// cycling is driven by the key tap, so re-fires are ignored.
     fn trigger(&mut self, id: u32) {
+        if self.session.is_some() {
+            return;
+        }
         let modifier = if id <= 2 {
             Modifier::Command
         } else {
@@ -56,23 +61,45 @@ impl App {
         };
         let backward = id == 2 || id == 4;
 
-        if let Some(live) = &mut self.session {
-            live.selection.cycle(backward);
-        } else {
-            let candidates = self.enumerate(modifier);
-            let Some(mut selection) = model::Session::start(candidates.len()) else {
-                return;
-            };
-            if backward {
-                selection.select(candidates.len() - 1);
-            }
-            self.session = Some(Live {
-                candidates,
-                selection,
-                trigger: modifier,
-            });
+        let candidates = self.enumerate(modifier);
+        let Some(mut selection) = model::Session::start(candidates.len()) else {
+            return;
+        };
+        if backward {
+            selection.select(candidates.len() - 1);
         }
+        self.session = Some(Live {
+            candidates,
+            selection,
+            trigger: modifier,
+        });
+        self.set_keys_enabled(true);
         self.render();
+    }
+
+    /// A key was pressed while a session is open: Tab (and its auto-repeats)
+    /// moves the selection, Escape cancels; both are swallowed so the focused
+    /// app never sees them. Everything else passes through.
+    fn on_key(&mut self, event: &objc2_core_graphics::CGEvent) -> input::Disposition {
+        if self.session.is_none() {
+            return input::Disposition::Keep;
+        }
+        let code = input::keycode(event);
+        if code == i64::from(input::KEY_TAB) {
+            let backward = input::flags(event).contains(CGEventFlags::MaskShift);
+            if let Some(live) = &mut self.session {
+                live.selection.cycle(backward);
+            }
+            self.render();
+            input::Disposition::Swallow
+        } else if code == i64::from(input::KEY_ESCAPE) {
+            self.session = None;
+            self.strip.hide();
+            self.set_keys_enabled(false);
+            input::Disposition::Swallow
+        } else {
+            input::Disposition::Keep
+        }
     }
 
     /// Modifier flags changed: if the trigger modifier is no longer held,
@@ -87,6 +114,13 @@ impl App {
             self.ws.focus_window(target.pid, target.wid);
         }
         self.strip.hide();
+        self.set_keys_enabled(false);
+    }
+
+    fn set_keys_enabled(&self, enabled: bool) {
+        if let Some(keys) = &self.keys {
+            keys.set_enabled(enabled);
+        }
     }
 
     fn enumerate(&self, modifier: Modifier) -> Vec<Candidate> {
@@ -141,6 +175,7 @@ pub fn run(mtm: MainThreadMarker) {
         ws,
         strip,
         session: None,
+        keys: None,
     }));
 
     let triggers = [
@@ -162,6 +197,20 @@ pub fn run(mtm: MainThreadMarker) {
         println!("input: could not register triggers");
         return;
     };
+
+    let on_key = app.clone();
+    let key_mask = input::event_mask(&[CGEventType::KeyDown]);
+    let Some(key_tap) =
+        input::EventTap::install(CGEventTapOptions::Default, key_mask, move |_ty, ev| {
+            on_key.borrow_mut().on_key(ev)
+        })
+    else {
+        println!("input: could not install the session key tap (accessibility?)");
+        return;
+    };
+    let keys = key_tap.handle();
+    keys.set_enabled(false);
+    app.borrow_mut().keys = Some(keys);
 
     let on_flags = app.clone();
     let mask = input::event_mask(&[CGEventType::FlagsChanged]);
