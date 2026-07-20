@@ -156,6 +156,21 @@ impl Strip {
         self.selected.set(index);
     }
 
+    /// Rebuilds one tile in place — the path a freshly captured preview takes
+    /// while the strip is up. Keeps the frame and the selection highlight.
+    pub fn update_tile(&self, index: usize, tile: &Tile) {
+        let mut tiles = self.tiles.borrow_mut();
+        let Some(slot) = tiles.get_mut(index) else {
+            return;
+        };
+        let view = self.tile(tile);
+        view.setFrameOrigin(slot.frame().origin);
+        self.effect.addSubview(&view);
+        slot.removeFromSuperview();
+        set_highlight(&view, index == self.selected.get());
+        *slot = view;
+    }
+
     pub fn hide(&self) {
         self.panel.orderOut(None);
     }
