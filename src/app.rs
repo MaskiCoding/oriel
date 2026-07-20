@@ -1,48 +1,100 @@
 //! The M1 loop: hold a trigger, cycle with taps, release to jump.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType};
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
+
+mod dispatch {
+    use core::ffi::c_void;
+    #[repr(C)]
+    pub struct Queue([u8; 0]);
+    unsafe extern "C" {
+        pub static _dispatch_main_q: Queue;
+        pub fn dispatch_time(when: u64, delta: i64) -> u64;
+        pub fn dispatch_after_f(
+            when: u64,
+            queue: *const Queue,
+            context: *mut c_void,
+            work: unsafe extern "C" fn(*mut c_void),
+        );
+        pub fn dispatch_async_f(
+            queue: *const Queue,
+            context: *mut c_void,
+            work: unsafe extern "C" fn(*mut c_void),
+        );
+    }
+}
+
+unsafe extern "C" fn call_boxed(ctx: *mut core::ffi::c_void) {
+    let work: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx.cast()) };
+    // `call_boxed` is plain `extern "C"`, so a panic must not unwind into libdispatch.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+}
 
 /// Runs `work` on the main run loop after `delay_ms`, outside the current event
 /// handler. Focus can't be done from inside the hot-key handler that consumed
 /// the triggering event (the `WindowServer` ignores it), and the `WindowServer`
 /// also needs a moment to settle after the event before it accepts one.
 fn on_main_after(delay_ms: u64, work: impl FnOnce() + 'static) {
-    use core::ffi::c_void;
-    #[repr(C)]
-    struct Queue([u8; 0]);
-    unsafe extern "C" {
-        static _dispatch_main_q: Queue;
-        fn dispatch_time(when: u64, delta: i64) -> u64;
-        fn dispatch_after_f(
-            when: u64,
-            queue: *const Queue,
-            context: *mut c_void,
-            work: unsafe extern "C" fn(*mut c_void),
-        );
-    }
-    unsafe extern "C" fn call(ctx: *mut c_void) {
-        let work: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx.cast()) };
-        // `call` is plain `extern "C"`, so a panic must not unwind into libdispatch.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-    }
     let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
     let nanos = i64::try_from(delay_ms)
         .unwrap_or(i64::MAX)
         .saturating_mul(1_000_000);
     unsafe {
-        let when = dispatch_time(0, nanos);
-        dispatch_after_f(
+        let when = dispatch::dispatch_time(0, nanos);
+        dispatch::dispatch_after_f(
             when,
-            &raw const _dispatch_main_q,
+            &raw const dispatch::_dispatch_main_q,
             Box::into_raw(boxed).cast(),
-            call,
+            call_boxed,
         );
     }
+}
+
+/// Runs `work` on the main run loop; callable from any thread — the capture
+/// worker uses it to hand finished previews back.
+fn on_main(work: impl FnOnce() + Send + 'static) {
+    let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
+    unsafe {
+        dispatch::dispatch_async_f(
+            &raw const dispatch::_dispatch_main_q,
+            Box::into_raw(boxed).cast(),
+            call_boxed,
+        );
+    }
+}
+
+thread_local! {
+    /// The live `App`, reachable from main-thread callbacks that originate on
+    /// another thread and so cannot capture the `Rc` directly.
+    static APP: RefCell<Weak<RefCell<App>>> = const { RefCell::new(Weak::new()) };
+}
+
+/// Sets up the capture pipeline, when Screen Recording permission allows one:
+/// results come back on the worker thread, hop to the main loop, and land in
+/// `preview_ready`. Without permission there is no worker and the strip stays
+/// on the icon layout (said once, in main).
+fn spawn_capture(app: &Rc<RefCell<App>>) {
+    if !capture::permitted() {
+        return;
+    }
+    let Some(capturer) = capture::Capturer::new() else {
+        println!("capture: unavailable — previews disabled");
+        return;
+    };
+    let worker = capture::Worker::spawn(capturer, |wid, image| {
+        on_main(move || {
+            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                app.borrow_mut().preview_ready(wid, image);
+            }
+        });
+    });
+    app.borrow_mut().worker = Some(worker);
+    app.borrow_mut().warm();
 }
 
 /// Focuses `wid`, retrying on failure — the `WindowServer` often rejects the
@@ -95,6 +147,19 @@ struct Candidate {
     title: String,
 }
 
+fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
+    ui::Tile {
+        app: c.app.clone(),
+        title: c.title.clone(),
+        pid: c.pid,
+        preview,
+    }
+}
+
+/// The preview cache's hard byte budget; at tile-sized thumbnails this is on
+/// the order of a hundred windows.
+const PREVIEW_BUDGET: usize = 32 << 20;
+
 struct Live {
     candidates: Vec<Candidate>,
     selection: model::Session,
@@ -118,6 +183,12 @@ struct App {
     /// Our own most-recently-focused order, since the `WindowServer` stacking
     /// query is unreliable for it.
     mru: model::Mru,
+    /// Tile-sized previews by window id; the strip always paints from here and
+    /// never waits on a capture.
+    cache: capture::Cache<CFRetained<CGImage>>,
+    /// `None` without Screen Recording permission — the strip then stays on
+    /// the icon layout.
+    worker: Option<capture::Worker>,
 }
 
 impl App {
@@ -230,6 +301,7 @@ impl App {
         // stops reflecting focus after a couple of switches.
         let ids: Vec<model::WindowId> = windows.iter().map(|w| model::WindowId(w.wid)).collect();
         self.mru.sync(&ids);
+        self.cache.retain(|wid| ids.contains(&model::WindowId(wid)));
         let mut by_wid: std::collections::HashMap<u32, winsrv::WindowInfo> =
             windows.into_iter().map(|w| (w.wid, w)).collect();
         let mut ordered: Vec<winsrv::WindowInfo> = self
@@ -255,19 +327,61 @@ impl App {
             .collect()
     }
 
-    fn render(&self) {
+    /// Paints the strip for the current session: previews straight from cache
+    /// (stale beats late — first paint never waits on a capture), then a
+    /// refresh of every visible window queued behind it.
+    fn render(&mut self) {
         let Some(live) = &self.session else { return };
+        let cache = &mut self.cache;
         let tiles: Vec<ui::Tile> = live
             .candidates
             .iter()
-            .map(|c| ui::Tile {
-                app: c.app.clone(),
-                title: c.title.clone(),
-                pid: c.pid,
-                preview: None,
-            })
+            .map(|c| tile_of(c, cache.shown(c.wid).cloned()))
             .collect();
         self.strip.show(&tiles, live.selection.selected());
+        if let Some(worker) = &self.worker {
+            for c in &live.candidates {
+                worker.request(c.wid);
+            }
+        }
+    }
+
+    /// A fresh capture arrived from the worker: cache it, and if that window
+    /// is on screen right now, repaint its tile.
+    fn preview_ready(&mut self, wid: u32, image: CFRetained<CGImage>) {
+        let bytes = capture::cost(&image);
+        self.cache.insert(wid, image, bytes);
+        let Some(live) = &self.session else { return };
+        let Some(index) = live.candidates.iter().position(|c| c.wid == wid) else {
+            return;
+        };
+        let tile = tile_of(&live.candidates[index], self.cache.shown(wid).cloned());
+        self.strip.update_tile(index, &tile);
+    }
+
+    /// Pre-captures every switchable window, so the first summon paints
+    /// previews instead of icons.
+    fn warm(&mut self) {
+        if self.worker.is_none() {
+            return;
+        }
+        let wids: Vec<u32> = self
+            .enumerate(Modifier::Command)
+            .iter()
+            .map(|c| c.wid)
+            .collect();
+        if let Some(worker) = &self.worker {
+            for wid in wids {
+                worker.request(wid);
+            }
+        }
+    }
+
+    /// Asks for a fresh preview of one window, if capturing is available.
+    fn request_preview(&self, wid: u32) {
+        if let Some(worker) = &self.worker {
+            worker.request(wid);
+        }
     }
 }
 
@@ -302,7 +416,11 @@ pub fn run(mtm: MainThreadMarker) {
         held: CGEventFlags::empty(),
         generation: Rc::new(Cell::new(0)),
         mru: model::Mru::default(),
+        cache: capture::Cache::new(PREVIEW_BUDGET),
+        worker: None,
     }));
+    APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
+    spawn_capture(&app);
 
     let triggers = [
         (1, input::CMD),
@@ -351,12 +469,15 @@ pub fn run(mtm: MainThreadMarker) {
     };
 
     // Track focus changes made outside Oriel: on each app activation, record
-    // where the user landed so the MRU order stays honest.
+    // where the user landed so the MRU order stays honest, and refresh that
+    // window's preview while it is front and current.
     let on_activate = app.clone();
     let block = block2::RcBlock::new(
         move |_: core::ptr::NonNull<objc2_foundation::NSNotification>| {
             if let Some(wid) = front_window() {
-                on_activate.borrow_mut().mru.touch(model::WindowId(wid));
+                let mut app = on_activate.borrow_mut();
+                app.mru.touch(model::WindowId(wid));
+                app.request_preview(wid);
             }
         },
     );
