@@ -17,7 +17,7 @@ objc2-quartz-core = { version = "0.3.2", features = ["CAAnimation", "CALayer", "
 
 [dependencies.objc2-foundation]
 version = "0.3.2"
-features = ["NSString", "NSGeometry", "NSValue"]
+features = ["NSArray", "NSString", "NSGeometry", "NSValue"]
 
 [dependencies.objc2-app-kit]
 version = "0.3.2"

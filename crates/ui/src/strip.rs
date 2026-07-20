@@ -10,8 +10,10 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
-use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::{CABasicAnimation, CALayer, CAMediaTiming, kCAGravityResizeAspect};
+use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::{
+    CAAnimation, CAAnimationGroup, CABasicAnimation, CALayer, CAMediaTiming, kCAGravityResizeAspect,
+};
 
 /// One entry to render in the strip.
 pub struct Tile {
@@ -46,6 +48,8 @@ const PAD: f64 = 24.0;
 const ICON: f64 = 64.0;
 /// The Pulse blossom's footprint in the caption row.
 const BLOOM: f64 = 12.0;
+/// How long one petal's pluck-fall-regrow loop takes.
+const PLUCK_CYCLE: f64 = 3.4;
 /// How full a row aims to be, as a share of the hard width limit — the strip
 /// prefers growing down over stretching one row across the screen.
 const ROW_FILL: f64 = 0.8;
@@ -300,7 +304,7 @@ impl Strip {
                         .unwrap_or(0)
                         .wrapping_mul(17),
                 );
-                let bloom = Self::bloom(f64::from(seed % 110) / 100.0);
+                let bloom = Self::bloom(f64::from(seed % 340) / 100.0);
                 bloom.setFrame(NSRect::new(
                     NSPoint::new(text_x + 1.0, base + 4.0),
                     NSSize::new(BLOOM, BLOOM),
@@ -338,34 +342,37 @@ impl Strip {
         view.addSubview(&label);
     }
 
-    fn surface_frame(width: f64) -> NSRect {
-        NSRect::new(
-            NSPoint::new(INSET, INSET),
-            NSSize::new(width - 2.0 * INSET, PREVIEW_H),
-        )
-    }
-
-    /// The Pulse — a tiny sakura blossom, in the app icon's palette, that
-    /// twinkles while a window says it is working. `phase` staggers the
-    /// animation so a row of busy tiles doesn't blink in lockstep.
+    /// The Pulse — a tiny sakura blossom in the app icon's palette. While a
+    /// window says it is working, its petals take turns being plucked:
+    /// each drifts down over the preview, fades, and grows back. `phase`
+    /// staggers whole windows so busy tiles don't shed in sync.
     fn bloom(phase: f64) -> Retained<CALayer> {
         let rose = NSColor::colorWithSRGBRed_green_blue_alpha(0.882, 0.569, 0.667, 1.0).CGColor();
         let cream = NSColor::colorWithSRGBRed_green_blue_alpha(0.973, 0.945, 0.898, 1.0).CGColor();
         let container = CALayer::new();
+        // Above sibling view layers, so falling petals cross the preview
+        // instead of vanishing under it.
+        container.setZPosition(10.0);
         let mid = BLOOM / 2.0;
         for k in 0..5 {
             let angle =
                 as_f64(k).mul_add(core::f64::consts::TAU / 5.0, core::f64::consts::FRAC_PI_2);
+            let position = NSPoint::new(
+                3.6f64.mul_add(angle.cos(), mid),
+                3.6f64.mul_add(angle.sin(), mid),
+            );
             let petal = CALayer::new();
             petal.setFrame(NSRect::new(
-                NSPoint::new(
-                    3.6f64.mul_add(angle.cos(), mid) - 2.3,
-                    3.6f64.mul_add(angle.sin(), mid) - 2.3,
-                ),
+                NSPoint::new(position.x - 2.3, position.y - 2.3),
                 NSSize::new(4.6, 4.6),
             ));
             petal.setCornerRadius(2.3);
             petal.setBackgroundColor(Some(&rose));
+            Self::pluck(
+                &petal,
+                position,
+                as_f64(k).mul_add(PLUCK_CYCLE / 5.0, phase),
+            );
             container.addSublayer(&petal);
         }
         let center = CALayer::new();
@@ -376,22 +383,47 @@ impl Strip {
         center.setCornerRadius(1.7);
         center.setBackgroundColor(Some(&cream));
         container.addSublayer(&center);
-
-        for (path, from, to) in [("transform.scale", 0.7, 1.1), ("opacity", 0.55, 1.0)] {
-            let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(path)));
-            let from = NSNumber::new_f64(from);
-            let to = NSNumber::new_f64(to);
-            unsafe {
-                anim.setFromValue(Some(from.as_ref()));
-                anim.setToValue(Some(to.as_ref()));
-            }
-            anim.setDuration(0.55);
-            anim.setAutoreverses(true);
-            anim.setRepeatCount(f32::INFINITY);
-            anim.setTimeOffset(phase);
-            container.addAnimation_forKey(&anim, Some(&NSString::from_str(path)));
-        }
         container
+    }
+
+    /// One petal's life in the loop: sit on the blossom, get plucked, drift
+    /// down and fade, grow back.
+    fn pluck(petal: &CALayer, rest: NSPoint, offset: f64) {
+        const PLUCK_AT: f64 = 1.9;
+        const FALL: f64 = 1.4;
+        let travel = [
+            ("position.y", rest.y, rest.y - 26.0, PLUCK_AT, FALL),
+            ("position.x", rest.x, rest.x + 5.0, PLUCK_AT, FALL),
+            ("opacity", 1.0, 0.0, PLUCK_AT + 0.2, FALL - 0.2),
+        ];
+        let legs: Vec<Retained<CAAnimation>> = travel
+            .into_iter()
+            .map(|(path, from, to, begin, duration)| {
+                let leg = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(path)));
+                let from = NSNumber::new_f64(from);
+                let to = NSNumber::new_f64(to);
+                unsafe {
+                    leg.setFromValue(Some(from.as_ref()));
+                    leg.setToValue(Some(to.as_ref()));
+                }
+                leg.setBeginTime(begin);
+                leg.setDuration(duration);
+                Retained::into_super(Retained::into_super(leg))
+            })
+            .collect();
+        let cycle = CAAnimationGroup::new();
+        cycle.setAnimations(Some(&NSArray::from_retained_slice(&legs)));
+        cycle.setDuration(PLUCK_CYCLE);
+        cycle.setRepeatCount(f32::INFINITY);
+        cycle.setTimeOffset(offset);
+        petal.addAnimation_forKey(&cycle, Some(&NSString::from_str("pluck")));
+    }
+
+    fn surface_frame(width: f64) -> NSRect {
+        NSRect::new(
+            NSPoint::new(INSET, INSET),
+            NSSize::new(width - 2.0 * INSET, PREVIEW_H),
+        )
     }
 
     /// The whole window, aspect-fit inside the preview box.
