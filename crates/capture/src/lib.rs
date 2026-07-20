@@ -2,6 +2,14 @@
 //! the `WindowServer`'s hardware capture, the only one that also sees minimized
 //! and off-Space windows.
 
+mod cache;
+mod thumb;
+mod worker;
+
+pub use cache::Cache;
+pub use thumb::{cost, thumbnail};
+pub use worker::Worker;
+
 use core::ffi::c_int;
 use core::ptr::NonNull;
 
