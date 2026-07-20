@@ -9,7 +9,8 @@ fn main() {
                 None => std::process::exit(2),
             }
         }
-        Some("--suppress-and-hang") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--suppress-and-hang") => {
             let suppression = input::Suppression::engage();
             println!(
                 "{}",
@@ -23,7 +24,8 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
-        Some("--focus") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--focus") => {
             let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             let ws = winsrv::WindowServer::connect().expect("windowserver");
@@ -32,20 +34,24 @@ fn main() {
             println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
             return;
         }
-        Some("--focused-wid") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--focused-wid") => {
             let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             println!("{}", ax::focused_window(pid).unwrap_or(0));
             return;
         }
-        Some("--tap-log") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--tap-log") => {
             tap_log();
             return;
         }
-        Some("--strip-demo") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--strip-demo") => {
             strip_demo();
             return;
         }
-        Some("--hotkey-log") if cfg!(debug_assertions) => {
+        #[cfg(debug_assertions)]
+        Some("--hotkey-log") => {
             hotkey_log();
             return;
         }
