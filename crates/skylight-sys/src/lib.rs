@@ -18,6 +18,16 @@ pub struct Psn {
     pub lo: u32,
 }
 
+/// `CGRect` by another name, so this crate stays free of framework deps.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
@@ -92,6 +102,7 @@ skylight! {
         SLSWindowIteratorGetTags: fn(CFTypeRef) -> u64;
         SLSWindowIteratorGetAttributes: fn(CFTypeRef) -> u64;
         SLSWindowIteratorGetLevel: fn(CFTypeRef) -> c_int;
+        SLSWindowIteratorGetBounds: fn(CFTypeRef) -> Rect;
         SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
         CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
         CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;

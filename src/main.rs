@@ -141,10 +141,12 @@ fn window_bits() {
     let ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
     for w in ws.windows(&ids) {
         println!(
-            "wid {:>6} pid {:>6} level {:>4} space {:?} tags {:#018x} attrs {:#018x} {}",
+            "wid {:>6} pid {:>6} level {:>4} {:>5.0}x{:<5.0} space {:?} tags {:#018x} attrs {:#018x} {}",
             w.wid,
             w.pid,
             w.level,
+            w.width,
+            w.height,
             ws.window_space(w.wid),
             w.tags,
             w.attributes,

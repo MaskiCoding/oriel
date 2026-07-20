@@ -29,6 +29,9 @@ pub struct WindowInfo {
     pub level: i32,
     pub tags: u64,
     pub attributes: u64,
+    /// On-screen frame in points; zero-sized when the `WindowServer` has none.
+    pub width: f64,
+    pub height: f64,
     pub app: Option<String>,
     pub title: Option<String>,
 }
@@ -120,6 +123,7 @@ impl WindowServer {
         while unsafe { self.sl.SLSWindowIteratorAdvance.unwrap()(raw_ptr(&iter)) } {
             let pid = unsafe { self.sl.SLSWindowIteratorGetPID.unwrap()(raw_ptr(&iter)) };
             let wid = unsafe { self.sl.SLSWindowIteratorGetWindowID.unwrap()(raw_ptr(&iter)) };
+            let bounds = unsafe { self.sl.SLSWindowIteratorGetBounds.unwrap()(raw_ptr(&iter)) };
             windows.push(WindowInfo {
                 wid,
                 pid,
@@ -129,6 +133,8 @@ impl WindowServer {
                 attributes: unsafe {
                     self.sl.SLSWindowIteratorGetAttributes.unwrap()(raw_ptr(&iter))
                 },
+                width: bounds.w,
+                height: bounds.h,
                 app: app_name(pid),
                 title: self.window_title(wid),
             });
