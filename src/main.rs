@@ -41,6 +41,13 @@ fn main() {
             return;
         }
         #[cfg(debug_assertions)]
+        Some("--capture-window") => {
+            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let path = args.next().unwrap_or_else(|| "capture.png".to_string());
+            capture_window(wid, &path);
+            return;
+        }
+        #[cfg(debug_assertions)]
         Some("--tap-log") => {
             tap_log();
             return;
@@ -72,6 +79,46 @@ fn main() {
         return;
     };
     app::run(mtm);
+}
+
+/// Captures a single window to a PNG on disk — proof the private capture path
+/// works, including for minimized and off-Space windows.
+#[cfg(debug_assertions)]
+fn capture_window(wid: u32, path: &str) {
+    let Some(capturer) = capture::Capturer::new() else {
+        println!("capture: unavailable (SkyLight or the capture symbol is missing)");
+        return;
+    };
+    if !capture::permitted() {
+        println!("capture: screen recording not granted — the frame will be black");
+    }
+    let Some(image) = capturer.window_image(wid) else {
+        println!("capture: no image for window {wid} (zero size or gone?)");
+        return;
+    };
+    let w = objc2_core_graphics::CGImage::width(Some(&image));
+    let h = objc2_core_graphics::CGImage::height(Some(&image));
+    if write_png(&image, path) {
+        println!("capture: wrote {w}x{h} to {path}");
+    } else {
+        println!("capture: PNG encoding failed");
+    }
+}
+
+#[cfg(debug_assertions)]
+fn write_png(image: &objc2_core_graphics::CGImage, path: &str) -> bool {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    use objc2_foundation::{NSDictionary, NSString};
+
+    let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), image);
+    let properties = NSDictionary::new();
+    let Some(data) = (unsafe {
+        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+    }) else {
+        return false;
+    };
+    data.writeToFile_atomically(&NSString::from_str(path), true)
 }
 
 #[cfg(debug_assertions)]

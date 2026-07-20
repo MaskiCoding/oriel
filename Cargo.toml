@@ -37,10 +37,10 @@ capture = { version = "0.1.0", path = "crates/capture" }
 input = { version = "0.1.0", path = "crates/input" }
 model = { version = "0.1.0", path = "crates/model" }
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace", "libc"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace", "libc"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
-objc2-foundation = { version = "0.3.2", features = ["NSNotification"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSNotification", "NSString"] }
 ui = { version = "0.1.0", path = "crates/ui" }
 winsrv = { path = "crates/winsrv" }
 

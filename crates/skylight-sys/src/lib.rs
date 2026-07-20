@@ -38,9 +38,13 @@ unsafe fn resolve<T: Copy>(handle: *mut c_void, symbol: &'static str) -> Option<
 }
 
 macro_rules! skylight {
-    ($($name:ident: fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
+    (
+        required { $($rname:ident: fn($($rarg:ty),*) $(-> $rret:ty)?;)* }
+        optional { $($oname:ident: fn($($oarg:ty),*) $(-> $oret:ty)?;)* }
+    ) => {
         pub struct SkyLight {
-            $(pub $name: Option<unsafe extern "C" fn($($arg),*) $(-> $ret)?>,)*
+            $(pub $rname: Option<unsafe extern "C" fn($($rarg),*) $(-> $rret)?>,)*
+            $(pub $oname: Option<unsafe extern "C" fn($($oarg),*) $(-> $oret)?>,)*
         }
 
         impl SkyLight {
@@ -52,14 +56,18 @@ macro_rules! skylight {
                     return None;
                 }
                 Some(Self {
-                    $($name: unsafe { resolve(handle, concat!(stringify!($name), "\0")) },)*
+                    $($rname: unsafe { resolve(handle, concat!(stringify!($rname), "\0")) },)*
+                    $($oname: unsafe { resolve(handle, concat!(stringify!($oname), "\0")) },)*
                 })
             }
 
+            /// Required symbols that failed to resolve. Optional (capability)
+            /// symbols are excluded: a missing one should degrade that one
+            /// capability, not fail the whole connection.
             pub fn missing(&self) -> Vec<&'static str> {
                 let mut names = Vec::new();
-                $(if self.$name.is_none() {
-                    names.push(stringify!($name));
+                $(if self.$rname.is_none() {
+                    names.push(stringify!($rname));
                 })*
                 names
             }
@@ -68,24 +76,33 @@ macro_rules! skylight {
 }
 
 skylight! {
-    SLSMainConnectionID: fn() -> c_int;
-    SLSCopyWindowsWithOptionsAndTags: fn(c_int, u32, CFArrayRef, u32, *mut u64, *mut u64) -> CFArrayRef;
-    SLSCopyManagedDisplaySpaces: fn(c_int) -> CFArrayRef;
-    SLSGetActiveSpace: fn(c_int) -> u64;
-    SLSCopySpacesForWindows: fn(c_int, c_int, CFArrayRef) -> CFArrayRef;
-    SLSWindowQueryWindows: fn(c_int, CFArrayRef, c_int) -> CFTypeRef;
-    SLSWindowQueryResultCopyWindows: fn(CFTypeRef) -> CFTypeRef;
-    SLSWindowIteratorGetCount: fn(CFTypeRef) -> c_int;
-    SLSWindowIteratorAdvance: fn(CFTypeRef) -> bool;
-    SLSWindowIteratorGetWindowID: fn(CFTypeRef) -> u32;
-    SLSWindowIteratorGetParentID: fn(CFTypeRef) -> u32;
-    SLSWindowIteratorGetPID: fn(CFTypeRef) -> c_int;
-    SLSWindowIteratorGetTags: fn(CFTypeRef) -> u64;
-    SLSWindowIteratorGetAttributes: fn(CFTypeRef) -> u64;
-    SLSWindowIteratorGetLevel: fn(CFTypeRef) -> c_int;
-    SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
-    CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
-    CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
-    _SLPSSetFrontProcessWithOptions: fn(*const Psn, u32, u32) -> c_int;
-    SLPSPostEventRecordTo: fn(*const Psn, *const u8) -> c_int;
+    required {
+        SLSMainConnectionID: fn() -> c_int;
+        SLSCopyWindowsWithOptionsAndTags: fn(c_int, u32, CFArrayRef, u32, *mut u64, *mut u64) -> CFArrayRef;
+        SLSCopyManagedDisplaySpaces: fn(c_int) -> CFArrayRef;
+        SLSGetActiveSpace: fn(c_int) -> u64;
+        SLSCopySpacesForWindows: fn(c_int, c_int, CFArrayRef) -> CFArrayRef;
+        SLSWindowQueryWindows: fn(c_int, CFArrayRef, c_int) -> CFTypeRef;
+        SLSWindowQueryResultCopyWindows: fn(CFTypeRef) -> CFTypeRef;
+        SLSWindowIteratorGetCount: fn(CFTypeRef) -> c_int;
+        SLSWindowIteratorAdvance: fn(CFTypeRef) -> bool;
+        SLSWindowIteratorGetWindowID: fn(CFTypeRef) -> u32;
+        SLSWindowIteratorGetParentID: fn(CFTypeRef) -> u32;
+        SLSWindowIteratorGetPID: fn(CFTypeRef) -> c_int;
+        SLSWindowIteratorGetTags: fn(CFTypeRef) -> u64;
+        SLSWindowIteratorGetAttributes: fn(CFTypeRef) -> u64;
+        SLSWindowIteratorGetLevel: fn(CFTypeRef) -> c_int;
+        SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
+        CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
+        CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
+        _SLPSSetFrontProcessWithOptions: fn(*const Psn, u32, u32) -> c_int;
+        SLPSPostEventRecordTo: fn(*const Psn, *const u8) -> c_int;
+    }
+    // Per-window screenshot, the only path that sees minimized/off-Space
+    // windows. Two spellings of the same function; the `SLS` name is native to
+    // SkyLight, `CGS` is a re-exported alias — resolve both, use whichever hits.
+    optional {
+        SLSHWCaptureWindowList: fn(c_int, *mut u32, u32, u32) -> CFArrayRef;
+        CGSHWCaptureWindowList: fn(c_int, *mut u32, u32, u32) -> CFArrayRef;
+    }
 }
