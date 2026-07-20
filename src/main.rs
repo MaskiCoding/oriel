@@ -152,6 +152,9 @@ fn window_bits() {
             w.attributes,
             w.app.unwrap_or_default()
         );
+        if let Some(title) = &w.title {
+            println!("           title: {title}");
+        }
     }
 }
 
