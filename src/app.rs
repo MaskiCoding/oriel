@@ -264,6 +264,7 @@ impl App {
                 app: c.app.clone(),
                 title: c.title.clone(),
                 pid: c.pid,
+                preview: None,
             })
             .collect();
         self.strip.show(&tiles, live.selection.selected());
