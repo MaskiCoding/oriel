@@ -11,7 +11,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::{CABasicAnimation, CAMediaTiming, kCAGravityResizeAspect};
+use objc2_quartz_core::{CABasicAnimation, CALayer, CAMediaTiming, kCAGravityResizeAspect};
 
 /// One entry to render in the strip.
 pub struct Tile {
@@ -44,6 +44,8 @@ const GAP: f64 = 14.0;
 const PAD: f64 = 24.0;
 /// The fallback app icon size when a tile has no preview.
 const ICON: f64 = 64.0;
+/// The Pulse blossom's footprint in the caption row.
+const BLOOM: f64 = 12.0;
 /// How full a row aims to be, as a share of the hard width limit — the strip
 /// prefers growing down over stretching one row across the screen.
 const ROW_FILL: f64 = 0.8;
@@ -291,8 +293,21 @@ impl Strip {
             text_x += 22.0;
         }
         if tile.working {
-            view.addSubview(&self.pulse_dot(text_x + 1.0, base + 7.5));
-            text_x += 15.0;
+            if let Some(layer) = view.layer() {
+                // A per-window phase, stable across repaints, staggers the blooms.
+                let seed = tile.pid.unsigned_abs().wrapping_mul(37).wrapping_add(
+                    u32::try_from(tile.title.len())
+                        .unwrap_or(0)
+                        .wrapping_mul(17),
+                );
+                let bloom = Self::bloom(f64::from(seed % 110) / 100.0);
+                bloom.setFrame(NSRect::new(
+                    NSPoint::new(text_x + 1.0, base + 4.0),
+                    NSSize::new(BLOOM, BLOOM),
+                ));
+                layer.addSublayer(&bloom);
+            }
+            text_x += BLOOM + 7.0;
         }
         // State markers sit right-aligned in the caption, where they stay
         // legible whatever the preview shows; the title yields to them.
@@ -330,30 +345,53 @@ impl Strip {
         )
     }
 
-    /// The Pulse — a softly blinking dot for a window that says it is working.
-    fn pulse_dot(&self, x: f64, y: f64) -> Retained<NSView> {
-        let dot = NSView::initWithFrame(
-            self.mtm.alloc(),
-            NSRect::new(NSPoint::new(x, y), NSSize::new(7.0, 7.0)),
-        );
-        dot.setWantsLayer(true);
-        if let Some(layer) = dot.layer() {
-            layer.setCornerRadius(3.5);
-            let color = NSColor::colorWithWhite_alpha(1.0, 0.95).CGColor();
-            layer.setBackgroundColor(Some(&color));
-            let fade = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
-            let from = NSNumber::new_f64(1.0);
-            let to = NSNumber::new_f64(0.2);
-            unsafe {
-                fade.setFromValue(Some(from.as_ref()));
-                fade.setToValue(Some(to.as_ref()));
-            }
-            fade.setDuration(0.6);
-            fade.setAutoreverses(true);
-            fade.setRepeatCount(f32::INFINITY);
-            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("pulse")));
+    /// The Pulse — a tiny sakura blossom, in the app icon's palette, that
+    /// twinkles while a window says it is working. `phase` staggers the
+    /// animation so a row of busy tiles doesn't blink in lockstep.
+    fn bloom(phase: f64) -> Retained<CALayer> {
+        let rose = NSColor::colorWithSRGBRed_green_blue_alpha(0.882, 0.569, 0.667, 1.0).CGColor();
+        let cream = NSColor::colorWithSRGBRed_green_blue_alpha(0.973, 0.945, 0.898, 1.0).CGColor();
+        let container = CALayer::new();
+        let mid = BLOOM / 2.0;
+        for k in 0..5 {
+            let angle =
+                as_f64(k).mul_add(core::f64::consts::TAU / 5.0, core::f64::consts::FRAC_PI_2);
+            let petal = CALayer::new();
+            petal.setFrame(NSRect::new(
+                NSPoint::new(
+                    3.6f64.mul_add(angle.cos(), mid) - 2.3,
+                    3.6f64.mul_add(angle.sin(), mid) - 2.3,
+                ),
+                NSSize::new(4.6, 4.6),
+            ));
+            petal.setCornerRadius(2.3);
+            petal.setBackgroundColor(Some(&rose));
+            container.addSublayer(&petal);
         }
-        dot
+        let center = CALayer::new();
+        center.setFrame(NSRect::new(
+            NSPoint::new(mid - 1.7, mid - 1.7),
+            NSSize::new(3.4, 3.4),
+        ));
+        center.setCornerRadius(1.7);
+        center.setBackgroundColor(Some(&cream));
+        container.addSublayer(&center);
+
+        for (path, from, to) in [("transform.scale", 0.7, 1.1), ("opacity", 0.55, 1.0)] {
+            let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(path)));
+            let from = NSNumber::new_f64(from);
+            let to = NSNumber::new_f64(to);
+            unsafe {
+                anim.setFromValue(Some(from.as_ref()));
+                anim.setToValue(Some(to.as_ref()));
+            }
+            anim.setDuration(0.55);
+            anim.setAutoreverses(true);
+            anim.setRepeatCount(f32::INFINITY);
+            anim.setTimeOffset(phase);
+            container.addAnimation_forKey(&anim, Some(&NSString::from_str(path)));
+        }
+        container
     }
 
     /// The whole window, aspect-fit inside the preview box.
