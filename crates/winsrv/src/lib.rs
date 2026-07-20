@@ -15,7 +15,12 @@ unsafe extern "C" {
 pub struct SpaceInfo {
     pub id: u64,
     pub current: bool,
+    /// A fullscreen app's own Space, as opposed to a user desktop.
+    pub fullscreen: bool,
 }
+
+/// The managed-Space "type" value for a fullscreen app's Space.
+const SPACE_TYPE_FULLSCREEN: i64 = 4;
 
 pub struct WindowInfo {
     pub wid: u32,
@@ -69,6 +74,7 @@ impl WindowServer {
                     spaces.push(SpaceInfo {
                         id: id.cast_unsigned(),
                         current: current == Some(id),
+                        fullscreen: dict_i64(space, "type") == Some(SPACE_TYPE_FULLSCREEN),
                     });
                 }
             }
@@ -82,6 +88,9 @@ impl WindowServer {
             .map(|&id| CFNumber::new_i64(id.cast_signed()))
             .collect();
         let spaces = CFArray::from_retained_objects(&ids);
+        // Options 0x7, not 0x2: only the wider query also returns minimized
+        // and hidden-app windows. It admits unordered ghosts too — callers
+        // filter those out via the tags/attributes bits (`model::WindowState`).
         let mut set_tags = 0_u64;
         let mut clear_tags = 0_u64;
         let raw = unsafe {
@@ -89,7 +98,7 @@ impl WindowServer {
                 self.cid,
                 0,
                 raw_ptr(&spaces),
-                0x2,
+                0x7,
                 &raw mut set_tags,
                 &raw mut clear_tags,
             )
@@ -125,6 +134,22 @@ impl WindowServer {
             });
         }
         windows
+    }
+
+    /// The Space `wid` lives on. 0x7 asks across current, other, and
+    /// minimized-window Spaces. Per-window by necessity: the batched form of
+    /// the call returns the distinct Spaces of the set, not one per window.
+    pub fn window_space(&self, wid: u32) -> Option<u64> {
+        let ids = [CFNumber::new_i32(wid.cast_signed())];
+        let list = CFArray::from_retained_objects(&ids);
+        let raw =
+            unsafe { self.sl.SLSCopySpacesForWindows.unwrap()(self.cid, 0x7, raw_ptr(&list)) };
+        let spaces = unsafe { retained::<CFArray>(raw) }?;
+        if spaces.count() < 1 {
+            return None;
+        }
+        let space = unsafe { element::<CFNumber>(&spaces, 0) }?;
+        space.as_i64().map(i64::cast_unsigned)
     }
 
     fn window_title(&self, wid: u32) -> Option<String> {
