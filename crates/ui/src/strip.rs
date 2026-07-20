@@ -55,6 +55,16 @@ fn columns(count: usize, max_content: f64) -> usize {
     cols
 }
 
+/// A translucent black backing — shared by the caption bar and the badge chip
+/// so they read over any preview.
+fn scrim(view: &NSView) {
+    view.setWantsLayer(true);
+    if let Some(layer) = view.layer() {
+        let color = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
+        layer.setBackgroundColor(Some(&color));
+    }
+}
+
 /// The selection ring — an accent border, so it reads over a preview instead of
 /// being hidden behind it.
 fn set_highlight(tile: &NSView, on: bool) {
@@ -219,10 +229,8 @@ impl Strip {
                 NSSize::new(w, h),
             ),
         );
-        chip.setWantsLayer(true);
+        scrim(&chip);
         if let Some(layer) = chip.layer() {
-            let scrim = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
-            layer.setBackgroundColor(Some(&scrim));
             layer.setCornerRadius(h / 2.0);
         }
         label.setFrameOrigin(NSPoint::new(5.0, 2.0));
@@ -243,11 +251,7 @@ impl Strip {
             self.mtm.alloc(),
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(TILE_W, CAPTION_H)),
         );
-        bar.setWantsLayer(true);
-        if let Some(layer) = bar.layer() {
-            let scrim = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
-            layer.setBackgroundColor(Some(&scrim));
-        }
+        scrim(&bar);
 
         if let Some(icon) = NSRunningApplication::runningApplicationWithProcessIdentifier(tile.pid)
             .and_then(|app| app.icon())
