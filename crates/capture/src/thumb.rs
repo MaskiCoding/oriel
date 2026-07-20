@@ -11,8 +11,8 @@ use objc2_core_graphics::{
 
 /// Twice the largest tile's preview box, so previews stay sharp on Retina
 /// panels. Fit, not cover: tiles show the whole window, letterboxed.
-const MAX_W: usize = 584;
-const MAX_H: usize = 224;
+const MAX_W: usize = 720;
+const MAX_H: usize = 280;
 
 /// What a cached image costs against the cache's byte budget.
 pub fn cost(image: &CGImage) -> usize {

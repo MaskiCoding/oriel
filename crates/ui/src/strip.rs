@@ -31,17 +31,20 @@ pub struct Tile {
 /// Inner margin between a tile's edge and its contents.
 const INSET: f64 = 8.0;
 /// Height of the preview box inside every tile.
-const PREVIEW_H: f64 = 112.0;
+const PREVIEW_H: f64 = 140.0;
 /// Height of the caption row (app icon + title) above the preview.
 const CAPTION_H: f64 = 22.0;
 const TILE_H: f64 = INSET + PREVIEW_H + 4.0 + CAPTION_H + 4.0;
 /// Bounds on a tile's width, whatever the window's shape.
-const MIN_W: f64 = 96.0;
-const MAX_W: f64 = 292.0;
+const MIN_W: f64 = 110.0;
+const MAX_W: f64 = 360.0;
 const GAP: f64 = 14.0;
 const PAD: f64 = 24.0;
 /// The fallback app icon size when a tile has no preview.
-const ICON: f64 = 56.0;
+const ICON: f64 = 64.0;
+/// How full a row aims to be, as a share of the hard width limit — the strip
+/// prefers growing down over stretching one row across the screen.
+const ROW_FILL: f64 = 0.8;
 
 fn as_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
@@ -54,7 +57,7 @@ fn tile_width(aspect: f64) -> f64 {
 }
 
 /// Where every tile goes: bottom-left origins in panel coordinates, rows
-/// wrapped at the width limit and centered, plus the panel size.
+/// balanced to near-equal widths and centered, plus the panel size.
 struct Layout {
     origins: Vec<(f64, f64)>,
     width: f64,
@@ -62,11 +65,24 @@ struct Layout {
 }
 
 fn layout(widths: &[f64], max_content: f64) -> Layout {
+    let total = widths.iter().sum::<f64>() + GAP * as_f64(widths.len().saturating_sub(1));
+    // Enough rows that none needs to fill past ROW_FILL of the hard limit...
+    let mut wanted = 1;
+    while total / as_f64(wanted) > max_content * ROW_FILL && wanted < widths.len() {
+        wanted += 1;
+    }
+    // ...then hand tiles out so every row lands as close to its share as the
+    // tile sizes allow. The last row takes the remainder; the hard limit
+    // always wins.
+    let target = total / as_f64(wanted);
     let mut rows: Vec<(Vec<usize>, f64)> = Vec::new();
     let mut row: Vec<usize> = Vec::new();
     let mut row_w = 0.0;
     for (i, &w) in widths.iter().enumerate() {
-        if !row.is_empty() && row_w + GAP + w > max_content {
+        let next = row_w + GAP + w;
+        let over_hard = next > max_content;
+        let past_share = rows.len() + 1 < wanted && (next - target).abs() > (target - row_w).abs();
+        if !row.is_empty() && (over_hard || past_share) {
             rows.push((std::mem::take(&mut row), row_w));
             row_w = 0.0;
         }
@@ -363,6 +379,14 @@ mod tests {
         let lone = plan.origins[2].0;
         assert!(lone > plan.origins[0].0);
         assert!((lone - (PAD + (200.0 + GAP - 100.0) / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rows_balance_instead_of_stuffing_the_first() {
+        // six equal tiles, the hard limit fits four per row: balanced 3+3
+        let plan = layout(&[200.0; 6], 1000.0);
+        let bottom = plan.origins[5].1;
+        assert_eq!(plan.origins.iter().filter(|o| o.1 > bottom).count(), 3);
     }
 
     #[test]
