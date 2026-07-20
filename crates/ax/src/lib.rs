@@ -2,7 +2,7 @@
 
 mod raise;
 
-pub use raise::raise_window;
+pub use raise::{focused_window, raise_window};
 
 use core::ffi::c_void;
 
