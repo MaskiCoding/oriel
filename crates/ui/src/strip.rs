@@ -201,7 +201,17 @@ impl Strip {
         self.selected.set(usize::MAX);
         self.select(selected);
 
-        self.panel.center();
+        // AppKit's center() floats windows above the visual middle; the strip
+        // sits at the true center of the visible screen instead.
+        if let Some(screen) = NSScreen::mainScreen(self.mtm) {
+            let frame = screen.visibleFrame();
+            self.panel.setFrameOrigin(NSPoint::new(
+                (frame.size.width - plan.width).mul_add(0.5, frame.origin.x),
+                (frame.size.height - plan.height).mul_add(0.5, frame.origin.y),
+            ));
+        } else {
+            self.panel.center();
+        }
         self.panel.orderFrontRegardless();
     }
 
