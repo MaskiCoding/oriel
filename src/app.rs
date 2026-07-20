@@ -94,7 +94,7 @@ fn spawn_capture(app: &Rc<RefCell<App>>) {
         });
     });
     app.borrow_mut().worker = Some(worker);
-    app.borrow_mut().warm();
+    app.borrow().warm();
 }
 
 /// Focuses `wid`, retrying on failure — the `WindowServer` often rejects the
@@ -158,32 +158,8 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
     }
 }
 
-/// What a Space contributes to a window's badge: fullscreen Spaces get the ⤢
-/// marker, user Spaces off screen get their Desktop number.
-struct SpaceMark {
-    fullscreen: bool,
-    current: bool,
-    desktop: usize,
-}
-
-fn space_marks(spaces: &[winsrv::SpaceInfo]) -> std::collections::HashMap<u64, SpaceMark> {
-    let mut desktop = 0;
-    spaces
-        .iter()
-        .map(|s| {
-            if !s.fullscreen {
-                desktop += 1;
-            }
-            (
-                s.id,
-                SpaceMark {
-                    fullscreen: s.fullscreen,
-                    current: s.current,
-                    desktop,
-                },
-            )
-        })
-        .collect()
+fn switchable(w: &winsrv::WindowInfo) -> bool {
+    w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
 }
 
 /// The preview cache's hard byte budget; at tile-sized thumbnails this is on
@@ -324,12 +300,14 @@ impl App {
 
     fn enumerate(&mut self, modifier: Modifier) -> Vec<Candidate> {
         let spaces = self.ws.spaces();
-        let marks = space_marks(&spaces);
+        let map = model::SpaceMap::new(spaces.iter().map(|s| model::SpaceDesc {
+            id: s.id,
+            current: s.current,
+            fullscreen: s.fullscreen,
+        }));
         let space_ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
         let mut windows = self.ws.windows(&space_ids);
-        windows.retain(|w| {
-            w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
-        });
+        windows.retain(switchable);
 
         // Order by our own recency, not the WindowServer stacking query, which
         // stops reflecting focus after a couple of switches.
@@ -354,17 +332,19 @@ impl App {
             .into_iter()
             .map(|w| {
                 let state = model::WindowState::decode(w.tags, w.attributes);
-                let mark = self.ws.window_space(w.wid).and_then(|id| marks.get(&id));
-                let (fullscreen, desktop) = mark.map_or((false, None), |m| {
-                    let desktop = (!m.fullscreen && !m.current).then_some(m.desktop);
-                    (m.fullscreen, desktop)
-                });
+                // The per-window Space lookup is an IPC round-trip; skip it
+                // when every Space is a current user desktop (no badge possible).
+                let space = if map.uniform() {
+                    None
+                } else {
+                    self.ws.window_space(w.wid)
+                };
                 Candidate {
                     pid: w.pid,
                     wid: w.wid,
                     app: w.app.unwrap_or_default(),
                     title: w.title.unwrap_or_default(),
-                    badge: model::badge(state.minimized, fullscreen, desktop),
+                    badge: map.badge(state.minimized, space),
                 }
             })
             .collect()
@@ -382,10 +362,8 @@ impl App {
             .map(|c| tile_of(c, cache.shown(c.wid).cloned()))
             .collect();
         self.strip.show(&tiles, live.selection.selected());
-        if let Some(worker) = &self.worker {
-            for c in &live.candidates {
-                worker.request(c.wid);
-            }
+        for c in &live.candidates {
+            self.request_preview(c.wid);
         }
     }
 
@@ -393,34 +371,30 @@ impl App {
     /// is on screen right now, repaint its tile.
     fn preview_ready(&mut self, wid: u32, image: CFRetained<CGImage>) {
         let bytes = capture::cost(&image);
-        self.cache.insert(wid, image, bytes);
+        self.cache.insert(wid, image.clone(), bytes);
         let Some(live) = &self.session else { return };
         let Some(index) = live.candidates.iter().position(|c| c.wid == wid) else {
             return;
         };
-        let tile = tile_of(&live.candidates[index], self.cache.shown(wid).cloned());
-        self.strip.update_tile(index, &tile);
+        self.strip
+            .update_tile(index, &tile_of(&live.candidates[index], Some(image)));
     }
 
     /// Pre-captures every switchable window, so the first summon paints
-    /// previews instead of icons.
-    fn warm(&mut self) {
+    /// previews instead of icons. Deliberately lighter than `enumerate`: just
+    /// the window list, no MRU, Space, or badge work.
+    fn warm(&self) {
         if self.worker.is_none() {
             return;
         }
-        let wids: Vec<u32> = self
-            .enumerate(Modifier::Command)
-            .iter()
-            .map(|c| c.wid)
-            .collect();
-        if let Some(worker) = &self.worker {
-            for wid in wids {
-                worker.request(wid);
+        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
+        for w in self.ws.windows(&space_ids) {
+            if switchable(&w) {
+                self.request_preview(w.wid);
             }
         }
     }
 
-    /// Asks for a fresh preview of one window, if capturing is available.
     fn request_preview(&self, wid: u32) {
         if let Some(worker) = &self.worker {
             worker.request(wid);

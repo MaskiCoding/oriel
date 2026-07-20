@@ -37,7 +37,7 @@ impl WindowState {
 
 /// The marker text for a tile: minimized ●, fullscreen ⤢, and the Desktop
 /// number when the window lives on another user Space. Empty means no chip.
-pub fn badge(minimized: bool, fullscreen: bool, desktop: Option<usize>) -> String {
+pub(crate) fn badge(minimized: bool, fullscreen: bool, desktop: Option<usize>) -> String {
     let mut parts = Vec::new();
     if minimized {
         parts.push("●".to_string());

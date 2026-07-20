@@ -206,7 +206,7 @@ fn strip_demo() {
                 app: w.app.unwrap_or_default(),
                 title: w.title.unwrap_or_default(),
                 pid: w.pid,
-                badge: model::badge(state.minimized, false, None),
+                badge: model::SpaceMap::new([]).badge(state.minimized, None),
             }
         })
         .collect();
