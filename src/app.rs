@@ -147,6 +147,7 @@ struct Candidate {
     title: String,
     badge: String,
     aspect: f64,
+    working: bool,
 }
 
 fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
@@ -157,6 +158,7 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
         aspect: c.aspect,
         preview,
         badge: c.badge.clone(),
+        working: c.working,
     }
 }
 
@@ -352,13 +354,15 @@ impl App {
                 } else {
                     self.ws.window_space(w.wid)
                 };
+                let caption = model::decode_title(w.title.as_deref().unwrap_or_default());
                 Candidate {
                     pid: w.pid,
                     wid: w.wid,
                     badge: map.badge(state.minimized, space),
                     aspect: aspect_of(&w),
                     app: w.app.unwrap_or_default(),
-                    title: w.title.unwrap_or_default(),
+                    title: caption.title,
+                    working: caption.working,
                 }
             })
             .collect()

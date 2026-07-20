@@ -10,8 +10,8 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-use objc2_quartz_core::kCAGravityResizeAspect;
+use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::{CABasicAnimation, CAMediaTiming, kCAGravityResizeAspect};
 
 /// One entry to render in the strip.
 pub struct Tile {
@@ -26,6 +26,8 @@ pub struct Tile {
     /// State markers (minimized ●, fullscreen ⤢, Desktop number), already
     /// composed; empty shows no chip.
     pub badge: String,
+    /// The Pulse: the window said it is busy (a spinner glyph in its title).
+    pub working: bool,
 }
 
 /// Inner margin between a tile's edge and its contents.
@@ -288,6 +290,10 @@ impl Strip {
             view.addSubview(&image);
             text_x += 22.0;
         }
+        if tile.working {
+            view.addSubview(&self.pulse_dot(text_x + 1.0, base + 7.5));
+            text_x += 15.0;
+        }
         // State markers sit right-aligned in the caption, where they stay
         // legible whatever the preview shows; the title yields to them.
         let mut text_end = width - INSET;
@@ -322,6 +328,32 @@ impl Strip {
             NSPoint::new(INSET, INSET),
             NSSize::new(width - 2.0 * INSET, PREVIEW_H),
         )
+    }
+
+    /// The Pulse — a softly blinking dot for a window that says it is working.
+    fn pulse_dot(&self, x: f64, y: f64) -> Retained<NSView> {
+        let dot = NSView::initWithFrame(
+            self.mtm.alloc(),
+            NSRect::new(NSPoint::new(x, y), NSSize::new(7.0, 7.0)),
+        );
+        dot.setWantsLayer(true);
+        if let Some(layer) = dot.layer() {
+            layer.setCornerRadius(3.5);
+            let color = NSColor::colorWithWhite_alpha(1.0, 0.95).CGColor();
+            layer.setBackgroundColor(Some(&color));
+            let fade = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
+            let from = NSNumber::new_f64(1.0);
+            let to = NSNumber::new_f64(0.2);
+            unsafe {
+                fade.setFromValue(Some(from.as_ref()));
+                fade.setToValue(Some(to.as_ref()));
+            }
+            fade.setDuration(0.6);
+            fade.setAutoreverses(true);
+            fade.setRepeatCount(f32::INFINITY);
+            layer.addAnimation_forKey(&fade, Some(&NSString::from_str("pulse")));
+        }
+        dot
     }
 
     /// The whole window, aspect-fit inside the preview box.

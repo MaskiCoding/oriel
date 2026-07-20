@@ -203,6 +203,7 @@ fn strip_demo() {
         .take(9)
         .map(|w| {
             let state = model::WindowState::decode(w.tags, w.attributes);
+            let caption = model::decode_title(w.title.as_deref().unwrap_or_default());
             ui::Tile {
                 preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
                 pid: w.pid,
@@ -213,7 +214,8 @@ fn strip_demo() {
                 },
                 badge: model::SpaceMap::new([]).badge(state.minimized, None),
                 app: w.app.unwrap_or_default(),
-                title: w.title.unwrap_or_default(),
+                title: caption.title,
+                working: caption.working,
             }
         })
         .collect();
