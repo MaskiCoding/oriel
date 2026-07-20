@@ -152,22 +152,26 @@ fn hotkey_log() {
 
 #[cfg(debug_assertions)]
 fn strip_demo() {
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    // Real running apps, so the demo shows real icons.
-    let tiles: Vec<ui::Tile> = NSWorkspace::sharedWorkspace()
-        .runningApplications()
-        .iter()
-        .filter(|a| a.activationPolicy() == NSApplicationActivationPolicy::Regular)
+    // Real windows with live screenshots, so the demo shows the Gallery style.
+    let ws = winsrv::WindowServer::connect().expect("windowserver");
+    let capturer = capture::Capturer::new();
+    let space_ids: Vec<u64> = ws.spaces().iter().map(|s| s.id).collect();
+    let tiles: Vec<ui::Tile> = ws
+        .windows(&space_ids)
+        .into_iter()
+        .filter(|w| w.level == 0)
         .take(9)
-        .map(|a| ui::Tile {
-            app: a.localizedName().map(|n| n.to_string()).unwrap_or_default(),
-            title: "window".to_string(),
-            pid: a.processIdentifier(),
+        .map(|w| ui::Tile {
+            preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
+            app: w.app.unwrap_or_default(),
+            title: w.title.unwrap_or_default(),
+            pid: w.pid,
         })
         .collect();
 

@@ -2,24 +2,33 @@ use std::cell::{Cell, RefCell};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
     NSRunningApplication, NSScreen, NSTextAlignment, NSTextField, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::CGImage;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::kCAGravityResizeAspectFill;
 
 /// One entry to render in the strip.
 pub struct Tile {
     pub app: String,
     pub title: String,
     pub pid: i32,
+    /// A live window screenshot, when previews are available (Gallery style).
+    /// `None` falls back to the app-icon layout (Icons style / no permission).
+    pub preview: Option<CFRetained<CGImage>>,
 }
 
 const TILE_W: f64 = 168.0;
 const TILE_H: f64 = 96.0;
 const ICON: f64 = 40.0;
+/// Height of the scrimmed caption bar on a Gallery tile.
+const CAPTION_H: f64 = 26.0;
 const GAP: f64 = 12.0;
 const PAD: f64 = 16.0;
 /// Cap on tiles per row before wrapping, matching the PRD's ~7/row target.
@@ -43,10 +52,13 @@ fn columns(count: usize, max_content: f64) -> usize {
     cols
 }
 
+/// The selection ring — an accent border, so it reads over a preview instead of
+/// being hidden behind it.
 fn set_highlight(tile: &NSView, on: bool) {
     if let Some(layer) = tile.layer() {
         let color = on.then(|| NSColor::controlAccentColor().CGColor());
-        layer.setBackgroundColor(color.as_deref());
+        layer.setBorderColor(color.as_deref());
+        layer.setBorderWidth(if on { 3.0 } else { 0.0 });
     }
 }
 
@@ -152,16 +164,72 @@ impl Strip {
         NSScreen::mainScreen(self.mtm).map_or(1440.0, |s| s.frame().size.width)
     }
 
-    /// A tile: app icon over app name + window title, in a layer-backed view so
-    /// the selection highlight is a single rounded fill.
+    /// A tile, layer-backed and rounded so the preview clips and the selection
+    /// border sits inside it. Gallery style when a preview is present, otherwise
+    /// the app-icon layout.
     fn tile(&self, tile: &Tile) -> Retained<NSView> {
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(TILE_W, TILE_H));
         let view = NSView::initWithFrame(self.mtm.alloc(), frame);
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setCornerRadius(10.0);
+            layer.setMasksToBounds(true);
         }
 
+        match &tile.preview {
+            Some(image) => self.fill_preview(&view, tile, image),
+            None => self.fill_icon(&view, tile),
+        }
+        view
+    }
+
+    /// Gallery tile: the screenshot fills the tile, with a scrimmed caption bar
+    /// (app icon + title) across the bottom for legibility over any image.
+    fn fill_preview(&self, view: &NSView, tile: &Tile, image: &CGImage) {
+        if let Some(layer) = view.layer() {
+            let contents: &AnyObject = unsafe { &*core::ptr::from_ref(image).cast::<AnyObject>() };
+            unsafe { layer.setContents(Some(contents)) };
+            layer.setContentsGravity(unsafe { kCAGravityResizeAspectFill });
+        }
+
+        let bar = NSView::initWithFrame(
+            self.mtm.alloc(),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(TILE_W, CAPTION_H)),
+        );
+        bar.setWantsLayer(true);
+        if let Some(layer) = bar.layer() {
+            let scrim = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
+            layer.setBackgroundColor(Some(&scrim));
+        }
+
+        if let Some(icon) = NSRunningApplication::runningApplicationWithProcessIdentifier(tile.pid)
+            .and_then(|app| app.icon())
+        {
+            let view = NSImageView::new(self.mtm);
+            view.setImage(Some(&icon));
+            view.setFrame(NSRect::new(NSPoint::new(6.0, 4.0), NSSize::new(18.0, 18.0)));
+            bar.addSubview(&view);
+        }
+
+        let text = if tile.title.is_empty() {
+            &tile.app
+        } else {
+            &tile.title
+        };
+        let label = NSTextField::labelWithString(&NSString::from_str(text), self.mtm);
+        label.setMaximumNumberOfLines(1);
+        label.setTextColor(Some(&NSColor::whiteColor()));
+        label.setFrame(NSRect::new(
+            NSPoint::new(28.0, 3.0),
+            NSSize::new(TILE_W - 34.0, 20.0),
+        ));
+        bar.addSubview(&label);
+
+        view.addSubview(&bar);
+    }
+
+    /// Fallback tile: app icon over app name + window title, centered.
+    fn fill_icon(&self, view: &NSView, tile: &Tile) {
         if let Some(icon) = NSRunningApplication::runningApplicationWithProcessIdentifier(tile.pid)
             .and_then(|app| app.icon())
         {
@@ -184,8 +252,6 @@ impl Strip {
             NSSize::new(TILE_W - 12.0, TILE_H - ICON - 14.0),
         ));
         view.addSubview(&label);
-
-        view
     }
 }
 
