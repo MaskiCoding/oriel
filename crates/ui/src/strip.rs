@@ -96,16 +96,6 @@ fn layout(widths: &[f64], max_content: f64) -> Layout {
     }
 }
 
-/// A translucent black backing for the badge chip, so it reads over any
-/// preview.
-fn scrim(view: &NSView) {
-    view.setWantsLayer(true);
-    if let Some(layer) = view.layer() {
-        let color = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
-        layer.setBackgroundColor(Some(&color));
-    }
-}
-
 /// The selection: the whole tile lifts — a tinted rounded backing plus an
 /// accent ring.
 fn set_highlight(tile: &NSView, on: bool) {
@@ -249,13 +239,11 @@ impl Strip {
         }
 
         self.caption(&view, tile, width);
-        match &tile.preview {
-            Some(image) => self.fill_preview(&view, image, width),
-            None => self.fill_icon(&view, tile.pid, width),
-        }
-        if !tile.badge.is_empty() {
-            self.add_badge(&view, &tile.badge, width);
-        }
+        let surface = match &tile.preview {
+            Some(image) => self.preview_surface(image, width),
+            None => self.icon_surface(tile.pid, width),
+        };
+        view.addSubview(&surface);
         view
     }
 
@@ -274,6 +262,19 @@ impl Strip {
             view.addSubview(&image);
             text_x += 22.0;
         }
+        // State markers sit right-aligned in the caption, where they stay
+        // legible whatever the preview shows; the title yields to them.
+        let mut text_end = width - INSET;
+        if !tile.badge.is_empty() {
+            let marks = NSTextField::labelWithString(&NSString::from_str(&tile.badge), self.mtm);
+            marks.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            marks.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.75)));
+            marks.sizeToFit();
+            let w = marks.frame().size.width;
+            marks.setFrameOrigin(NSPoint::new(width - INSET - w, base + 2.0));
+            view.addSubview(&marks);
+            text_end -= w + 6.0;
+        }
         let text = if tile.title.is_empty() {
             &tile.app
         } else {
@@ -285,20 +286,21 @@ impl Strip {
         label.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.9)));
         label.setFrame(NSRect::new(
             NSPoint::new(text_x, base + 2.0),
-            NSSize::new(width - text_x - INSET, 17.0),
+            NSSize::new((text_end - text_x).max(10.0), 17.0),
         ));
         view.addSubview(&label);
     }
 
+    fn surface_frame(width: f64) -> NSRect {
+        NSRect::new(
+            NSPoint::new(INSET, INSET),
+            NSSize::new(width - 2.0 * INSET, PREVIEW_H),
+        )
+    }
+
     /// The whole window, aspect-fit inside the preview box.
-    fn fill_preview(&self, view: &NSView, image: &CGImage, width: f64) {
-        let host = NSView::initWithFrame(
-            self.mtm.alloc(),
-            NSRect::new(
-                NSPoint::new(INSET, INSET),
-                NSSize::new(width - 2.0 * INSET, PREVIEW_H),
-            ),
-        );
+    fn preview_surface(&self, image: &CGImage, width: f64) -> Retained<NSView> {
+        let host = NSView::initWithFrame(self.mtm.alloc(), Self::surface_frame(width));
         host.setWantsLayer(true);
         if let Some(layer) = host.layer() {
             let contents: &AnyObject = unsafe { &*core::ptr::from_ref(image).cast::<AnyObject>() };
@@ -307,44 +309,22 @@ impl Strip {
             layer.setCornerRadius(6.0);
             layer.setMasksToBounds(true);
         }
-        view.addSubview(&host);
+        host
     }
 
     /// Fallback: a large centered app icon in place of the preview.
-    fn fill_icon(&self, view: &NSView, pid: i32, width: f64) {
+    fn icon_surface(&self, pid: i32, width: f64) -> Retained<NSView> {
+        let host = NSView::initWithFrame(self.mtm.alloc(), Self::surface_frame(width));
         if let Some(icon) = app_icon(pid) {
             let image = NSImageView::new(self.mtm);
             image.setImage(Some(&icon));
             image.setFrame(NSRect::new(
-                NSPoint::new((width - ICON) / 2.0, INSET + (PREVIEW_H - ICON) / 2.0),
+                NSPoint::new((width - 2.0 * INSET - ICON) / 2.0, (PREVIEW_H - ICON) / 2.0),
                 NSSize::new(ICON, ICON),
             ));
-            view.addSubview(&image);
+            host.addSubview(&image);
         }
-    }
-
-    /// The state-marker chip, a rounded scrim in the preview's top-right corner.
-    fn add_badge(&self, view: &NSView, badge: &str, width: f64) {
-        let label = NSTextField::labelWithString(&NSString::from_str(badge), self.mtm);
-        label.setTextColor(Some(&NSColor::whiteColor()));
-        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        label.sizeToFit();
-        let text = label.frame().size;
-        let (w, h) = (text.width + 10.0, text.height + 4.0);
-        let chip = NSView::initWithFrame(
-            self.mtm.alloc(),
-            NSRect::new(
-                NSPoint::new(width - INSET - w - 6.0, INSET + PREVIEW_H - h - 6.0),
-                NSSize::new(w, h),
-            ),
-        );
-        scrim(&chip);
-        if let Some(layer) = chip.layer() {
-            layer.setCornerRadius(h / 2.0);
-        }
-        label.setFrameOrigin(NSPoint::new(5.0, 2.0));
-        chip.addSubview(&label);
-        view.addSubview(&chip);
+        host
     }
 }
 
