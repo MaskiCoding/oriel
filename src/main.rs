@@ -99,9 +99,7 @@ fn hotkey_log() {
 
 #[cfg(debug_assertions)]
 fn strip_demo() {
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-
-    use objc2_app_kit::NSWorkspace;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
 
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);

@@ -30,6 +30,7 @@ features = [
     "NSResponder",
     "NSRunningApplication",
     "NSScreen",
+    "NSText",
     "NSTextField",
     "NSView",
     "NSVisualEffectView",
