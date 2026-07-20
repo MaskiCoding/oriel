@@ -48,6 +48,11 @@ fn main() {
             return;
         }
         #[cfg(debug_assertions)]
+        Some("--window-bits") => {
+            window_bits();
+            return;
+        }
+        #[cfg(debug_assertions)]
         Some("--tap-log") => {
             tap_log();
             return;
@@ -119,6 +124,32 @@ fn write_png(image: &objc2_core_graphics::CGImage, path: &str) -> bool {
         return false;
     };
     data.writeToFile_atomically(&NSString::from_str(path), true)
+}
+
+/// Dumps every switchable window's raw tags/attributes and Space — the way the
+/// state-marker bits were established (minimize a window, diff the output).
+#[cfg(debug_assertions)]
+fn window_bits() {
+    let ws = winsrv::WindowServer::connect().expect("windowserver");
+    let spaces = ws.spaces();
+    for s in &spaces {
+        println!(
+            "space {} current={} fullscreen={}",
+            s.id, s.current, s.fullscreen
+        );
+    }
+    let ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
+    for w in ws.windows(&ids).into_iter().filter(|w| w.level == 0) {
+        println!(
+            "wid {:>6} pid {:>6} space {:?} tags {:#018x} attrs {:#018x} {}",
+            w.wid,
+            w.pid,
+            ws.window_space(w.wid),
+            w.tags,
+            w.attributes,
+            w.app.unwrap_or_default()
+        );
+    }
 }
 
 #[cfg(debug_assertions)]
