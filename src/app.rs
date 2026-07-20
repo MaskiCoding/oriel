@@ -146,6 +146,7 @@ struct Candidate {
     app: String,
     title: String,
     badge: String,
+    aspect: f64,
 }
 
 fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
@@ -153,8 +154,20 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
         app: c.app.clone(),
         title: c.title.clone(),
         pid: c.pid,
+        aspect: c.aspect,
         preview,
         badge: c.badge.clone(),
+    }
+}
+
+/// A pleasant tile shape for windows whose frame the `WindowServer` won't say.
+const FALLBACK_ASPECT: f64 = 1.6;
+
+fn aspect_of(w: &winsrv::WindowInfo) -> f64 {
+    if w.width > 0.0 && w.height > 0.0 {
+        w.width / w.height
+    } else {
+        FALLBACK_ASPECT
     }
 }
 
@@ -342,9 +355,10 @@ impl App {
                 Candidate {
                     pid: w.pid,
                     wid: w.wid,
+                    badge: map.badge(state.minimized, space),
+                    aspect: aspect_of(&w),
                     app: w.app.unwrap_or_default(),
                     title: w.title.unwrap_or_default(),
-                    badge: map.badge(state.minimized, space),
                 }
             })
             .collect()

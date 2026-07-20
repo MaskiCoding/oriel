@@ -205,10 +205,15 @@ fn strip_demo() {
             let state = model::WindowState::decode(w.tags, w.attributes);
             ui::Tile {
                 preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
+                pid: w.pid,
+                aspect: if w.height > 0.0 {
+                    w.width / w.height
+                } else {
+                    1.6
+                },
+                badge: model::SpaceMap::new([]).badge(state.minimized, None),
                 app: w.app.unwrap_or_default(),
                 title: w.title.unwrap_or_default(),
-                pid: w.pid,
-                badge: model::SpaceMap::new([]).badge(state.minimized, None),
             }
         })
         .collect();
