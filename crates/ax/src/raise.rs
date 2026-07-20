@@ -36,6 +36,34 @@ pub fn raise_window(pid: i32, wid: u32) -> bool {
     raised
 }
 
+/// The window id of `pid`'s currently focused window, via Accessibility —
+/// lets us record where the user actually is, however they got there (a click,
+/// an app's own shortcut), not just Oriel's own switches.
+pub fn focused_window(pid: i32) -> Option<u32> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return None;
+    }
+    let wid = focused_wid(app);
+    unsafe { CFRelease(app) };
+    wid
+}
+
+fn focused_wid(app: AxRef) -> Option<u32> {
+    let attr = CFString::from_str("AXFocusedWindow");
+    let mut value: *const c_void = core::ptr::null();
+    let err = unsafe { AXUIElementCopyAttributeValue(app, as_ptr(&attr), &raw mut value) };
+    let value = NonNull::new(value.cast_mut())?;
+    if err != AX_SUCCESS {
+        unsafe { CFRelease(value.as_ptr()) };
+        return None;
+    }
+    let mut wid = 0u32;
+    let found = unsafe { _AXUIElementGetWindow(value.as_ptr(), &raw mut wid) } == AX_SUCCESS;
+    unsafe { CFRelease(value.as_ptr()) };
+    found.then_some(wid)
+}
+
 fn raise_matching(app: AxRef, wid: u32) -> bool {
     let windows_attr = CFString::from_str("AXWindows");
     let mut value: *const c_void = core::ptr::null();
