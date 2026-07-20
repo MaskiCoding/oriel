@@ -137,7 +137,8 @@ impl WindowServer {
     }
 
     /// The Space `wid` lives on. 0x7 asks across current, other, and
-    /// minimized-window Spaces.
+    /// minimized-window Spaces. Per-window by necessity: the batched form of
+    /// the call returns the distinct Spaces of the set, not one per window.
     pub fn window_space(&self, wid: u32) -> Option<u64> {
         let ids = [CFNumber::new_i32(wid.cast_signed())];
         let list = CFArray::from_retained_objects(&ids);
