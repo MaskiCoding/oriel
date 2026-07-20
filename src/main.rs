@@ -141,10 +141,12 @@ fn window_bits() {
     let ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
     for w in ws.windows(&ids) {
         println!(
-            "wid {:>6} pid {:>6} level {:>4} space {:?} tags {:#018x} attrs {:#018x} {}",
+            "wid {:>6} pid {:>6} level {:>4} {:>5.0}x{:<5.0} space {:?} tags {:#018x} attrs {:#018x} {}",
             w.wid,
             w.pid,
             w.level,
+            w.width,
+            w.height,
             ws.window_space(w.wid),
             w.tags,
             w.attributes,
@@ -203,10 +205,15 @@ fn strip_demo() {
             let state = model::WindowState::decode(w.tags, w.attributes);
             ui::Tile {
                 preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
+                pid: w.pid,
+                aspect: if w.height > 0.0 {
+                    w.width / w.height
+                } else {
+                    1.6
+                },
+                badge: model::SpaceMap::new([]).badge(state.minimized, None),
                 app: w.app.unwrap_or_default(),
                 title: w.title.unwrap_or_default(),
-                pid: w.pid,
-                badge: model::SpaceMap::new([]).badge(state.minimized, None),
             }
         })
         .collect();

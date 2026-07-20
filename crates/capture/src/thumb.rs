@@ -9,9 +9,10 @@ use objc2_core_graphics::{
     CGImageAlphaInfo, CGImageByteOrderInfo, CGInterpolationQuality,
 };
 
-/// Twice the tile footprint, so previews stay sharp on Retina panels.
-const MAX_W: usize = 336;
-const MAX_H: usize = 192;
+/// Twice the largest tile's preview box, so previews stay sharp on Retina
+/// panels. Fit, not cover: tiles show the whole window, letterboxed.
+const MAX_W: usize = 720;
+const MAX_H: usize = 280;
 
 /// What a cached image costs against the cache's byte budget.
 pub fn cost(image: &CGImage) -> usize {
@@ -22,19 +23,19 @@ fn as_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-/// `image` scaled down, aspect preserved, to just cover a Retina tile — the
-/// tile's aspect-fill crops the rest. Returns the original when it is already
-/// tile-sized, or when scaling fails.
+/// `image` scaled down, aspect preserved, to fit inside a Retina tile's
+/// preview box. Returns the original when it is already that small, or when
+/// scaling fails.
 pub fn thumbnail(image: CFRetained<CGImage>) -> CFRetained<CGImage> {
     let (w, h) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
-    if w <= MAX_W || h <= MAX_H {
+    if w <= MAX_W && h <= MAX_H {
         return image;
     }
-    // Integer cover-scale: the binding axis lands exactly on the tile edge.
+    // Integer fit-scale: the binding axis lands exactly on the box edge.
     let (out_w, out_h) = if w * MAX_H >= h * MAX_W {
-        (w * MAX_H / h, MAX_H)
+        (MAX_W, (h * MAX_W / w).max(1))
     } else {
-        (MAX_W, h * MAX_W / w)
+        ((w * MAX_H / h).max(1), MAX_H)
     };
     let Some(space) = CGColorSpace::new_device_rgb() else {
         return image;
