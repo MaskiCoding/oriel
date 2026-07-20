@@ -61,6 +61,9 @@ impl Drop for Worker {
 fn run(rx: &Receiver<u32>, capturer: &Capturer, deliver: &impl Fn(u32, CFRetained<CGImage>)) {
     let mut last: HashMap<u32, Instant> = HashMap::new();
     while let Ok(first) = rx.recv() {
+        // Expired entries say nothing anymore; pruning keeps the map from
+        // growing one entry per window id ever seen by this resident process.
+        last.retain(|_, at| at.elapsed() < THROTTLE);
         // Coalesce the backlog so a burst of requests captures each window once.
         let mut batch = vec![first];
         while let Ok(wid) = rx.try_recv() {
