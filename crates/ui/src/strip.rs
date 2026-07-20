@@ -3,7 +3,8 @@ use std::cell::{Cell, RefCell};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSTextField,
+    NSBackingStoreType, NSColor, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
+    NSRunningApplication, NSScreen, NSTextAlignment, NSTextField, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
@@ -13,10 +14,12 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 pub struct Tile {
     pub app: String,
     pub title: String,
+    pub pid: i32,
 }
 
 const TILE_W: f64 = 168.0;
-const TILE_H: f64 = 84.0;
+const TILE_H: f64 = 96.0;
+const ICON: f64 = 40.0;
 const GAP: f64 = 12.0;
 const PAD: f64 = 16.0;
 /// Cap on tiles per row before wrapping, matching the PRD's ~7/row target.
@@ -40,6 +43,13 @@ fn columns(count: usize, max_content: f64) -> usize {
     cols
 }
 
+fn set_highlight(tile: &NSView, on: bool) {
+    if let Some(layer) = tile.layer() {
+        let color = on.then(|| NSColor::controlAccentColor().CGColor());
+        layer.setBackgroundColor(color.as_deref());
+    }
+}
+
 /// The resident overlay panel. Created once and kept alive: `show` builds the
 /// tile grid and orders it front, `select` moves the highlight without
 /// rebuilding, `hide` orders it out.
@@ -47,7 +57,7 @@ pub struct Strip {
     mtm: MainThreadMarker,
     panel: Retained<NSPanel>,
     effect: Retained<NSVisualEffectView>,
-    labels: RefCell<Vec<Retained<NSTextField>>>,
+    tiles: RefCell<Vec<Retained<NSView>>>,
     selected: Cell<usize>,
 }
 
@@ -79,7 +89,7 @@ impl Strip {
             mtm,
             panel,
             effect,
-            labels: RefCell::new(Vec::new()),
+            tiles: RefCell::new(Vec::new()),
             selected: Cell::new(0),
         }
     }
@@ -88,7 +98,7 @@ impl Strip {
     /// and centers the panel, highlights `selected`, and orders it front
     /// without activating Oriel.
     pub fn show(&self, tiles: &[Tile], selected: usize) {
-        for old in self.labels.borrow().iter() {
+        for old in self.tiles.borrow().iter() {
             old.removeFromSuperview();
         }
 
@@ -100,19 +110,19 @@ impl Strip {
         let height = as_f64(rows).mul_add(TILE_H, as_f64(rows - 1) * GAP + 2.0 * PAD);
         self.panel.setContentSize(NSSize::new(width, height));
 
-        let mut labels = Vec::with_capacity(tiles.len());
+        let mut views = Vec::with_capacity(tiles.len());
         for (i, tile) in tiles.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
             let x = (TILE_W + GAP).mul_add(as_f64(col), PAD);
             // NSView is bottom-left origin, so the top row sits at the largest y.
             let y = (TILE_H + GAP).mul_add(as_f64(rows - 1 - row), PAD);
-            let label = self.label(tile);
-            label.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(TILE_W, TILE_H)));
-            self.effect.addSubview(&label);
-            labels.push(label);
+            let view = self.tile(tile);
+            view.setFrameOrigin(NSPoint::new(x, y));
+            self.effect.addSubview(&view);
+            views.push(view);
         }
-        self.labels.replace(labels);
+        self.tiles.replace(views);
         self.selected.set(usize::MAX);
         self.select(selected);
 
@@ -123,14 +133,14 @@ impl Strip {
     /// Moves the highlight to `index` by recoloring two tiles — the cheap path
     /// taken on every cycle, so it keeps pace with key-repeat.
     pub fn select(&self, index: usize) {
-        let labels = self.labels.borrow();
-        if index >= labels.len() || index == self.selected.get() {
+        let tiles = self.tiles.borrow();
+        if index >= tiles.len() || index == self.selected.get() {
             return;
         }
-        if let Some(old) = labels.get(self.selected.get()) {
-            old.setBackgroundColor(Some(&NSColor::clearColor()));
+        if let Some(old) = tiles.get(self.selected.get()) {
+            set_highlight(old, false);
         }
-        labels[index].setBackgroundColor(Some(&NSColor::controlAccentColor()));
+        set_highlight(&tiles[index], true);
         self.selected.set(index);
     }
 
@@ -142,14 +152,40 @@ impl Strip {
         NSScreen::mainScreen(self.mtm).map_or(1440.0, |s| s.frame().size.width)
     }
 
-    fn label(&self, tile: &Tile) -> Retained<NSTextField> {
+    /// A tile: app icon over app name + window title, in a layer-backed view so
+    /// the selection highlight is a single rounded fill.
+    fn tile(&self, tile: &Tile) -> Retained<NSView> {
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(TILE_W, TILE_H));
+        let view = NSView::initWithFrame(self.mtm.alloc(), frame);
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            layer.setCornerRadius(10.0);
+        }
+
+        if let Some(icon) = NSRunningApplication::runningApplicationWithProcessIdentifier(tile.pid)
+            .and_then(|app| app.icon())
+        {
+            let image = NSImageView::new(self.mtm);
+            image.setImage(Some(&icon));
+            image.setFrame(NSRect::new(
+                NSPoint::new((TILE_W - ICON) / 2.0, TILE_H - ICON - 8.0),
+                NSSize::new(ICON, ICON),
+            ));
+            view.addSubview(&image);
+        }
+
         let text = NSString::from_str(&format!("{}\n{}", tile.app, tile.title));
         let label = NSTextField::labelWithString(&text, self.mtm);
         label.setMaximumNumberOfLines(2);
-        label.setDrawsBackground(true);
-        label.setBackgroundColor(Some(&NSColor::clearColor()));
+        label.setAlignment(NSTextAlignment::Center);
         label.setTextColor(Some(&NSColor::labelColor()));
-        label
+        label.setFrame(NSRect::new(
+            NSPoint::new(6.0, 6.0),
+            NSSize::new(TILE_W - 12.0, TILE_H - ICON - 14.0),
+        ));
+        view.addSubview(&label);
+
+        view
     }
 }
 

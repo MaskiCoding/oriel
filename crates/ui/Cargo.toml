@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 objc2 = "0.6.4"
 objc2-core-foundation = "0.3.2"
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "objc2-core-graphics"] }
 
 [dependencies.objc2-foundation]
 version = "0.3.2"
@@ -23,11 +24,16 @@ features = [
     "NSColor",
     "NSControl",
     "NSGraphics",
+    "NSImage",
+    "NSImageView",
     "NSPanel",
     "NSResponder",
+    "NSRunningApplication",
     "NSScreen",
+    "NSText",
     "NSTextField",
     "NSView",
     "NSVisualEffectView",
     "NSWindow",
+    "libc",
 ]

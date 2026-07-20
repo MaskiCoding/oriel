@@ -99,33 +99,24 @@ fn hotkey_log() {
 
 #[cfg(debug_assertions)]
 fn strip_demo() {
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
 
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let tiles: Vec<ui::Tile> = [
-        ("Finder", "Downloads"),
-        ("Safari", "Apple"),
-        ("Terminal", "~/src/oriel"),
-        ("Notes", "Groceries"),
-        ("Music", "Now Playing"),
-        ("Mail", "Inbox"),
-        ("Calendar", "Today"),
-        ("Maps", "Home"),
-        ("Photos", "Library"),
-        ("Preview", "receipt.pdf"),
-        ("Xcode", "AppDelegate"),
-        ("Slack", "general"),
-        ("Reminders", "Buy milk"),
-    ]
-    .iter()
-    .map(|(a, t)| ui::Tile {
-        app: (*a).to_string(),
-        title: (*t).to_string(),
-    })
-    .collect();
+    // Real running apps, so the demo shows real icons.
+    let tiles: Vec<ui::Tile> = NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .filter(|a| a.activationPolicy() == NSApplicationActivationPolicy::Regular)
+        .take(9)
+        .map(|a| ui::Tile {
+            app: a.localizedName().map(|n| n.to_string()).unwrap_or_default(),
+            title: "window".to_string(),
+            pid: a.processIdentifier(),
+        })
+        .collect();
 
     let strip = ui::Strip::new(mtm);
     strip.show(&tiles, 1);

@@ -263,6 +263,7 @@ impl App {
             .map(|c| ui::Tile {
                 app: c.app.clone(),
                 title: c.title.clone(),
+                pid: c.pid,
             })
             .collect();
         self.strip.show(&tiles, live.selection.selected());
