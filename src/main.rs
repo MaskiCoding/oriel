@@ -32,6 +32,11 @@ fn main() {
             println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
             return;
         }
+        Some("--focused-wid") if cfg!(debug_assertions) => {
+            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            println!("{}", ax::focused_window(pid).unwrap_or(0));
+            return;
+        }
         Some("--tap-log") if cfg!(debug_assertions) => {
             tap_log();
             return;
