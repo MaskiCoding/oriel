@@ -269,6 +269,15 @@ impl App {
     }
 }
 
+/// The window id of the current frontmost app's focused window, so the MRU can
+/// track switches the user makes outside Oriel (a click, an app's shortcut).
+fn front_window() -> Option<u32> {
+    use objc2_app_kit::NSWorkspace;
+    let workspace = NSWorkspace::sharedWorkspace();
+    let app = workspace.frontmostApplication()?;
+    ax::focused_window(app.processIdentifier())
+}
+
 /// Boots the resident app: suppresses the native switcher, binds the triggers
 /// and the release tap, then runs the main loop until quit.
 pub fn run(mtm: MainThreadMarker) {
@@ -337,6 +346,28 @@ pub fn run(mtm: MainThreadMarker) {
     else {
         println!("input: could not install the release tap (accessibility?)");
         return;
+    };
+
+    // Track focus changes made outside Oriel: on each app activation, record
+    // where the user landed so the MRU order stays honest.
+    let on_activate = app.clone();
+    let block = block2::RcBlock::new(
+        move |_: core::ptr::NonNull<objc2_foundation::NSNotification>| {
+            if let Some(wid) = front_window() {
+                on_activate.borrow_mut().mru.touch(model::WindowId(wid));
+            }
+        },
+    );
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    let _observer = unsafe {
+        workspace
+            .notificationCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(objc2_app_kit::NSWorkspaceDidActivateApplicationNotification),
+                None,
+                None,
+                &block,
+            )
     };
 
     let suppression = input::Suppression::engage();
