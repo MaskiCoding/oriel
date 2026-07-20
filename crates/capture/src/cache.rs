@@ -1,0 +1,132 @@
+//! Preview cache: a hard byte budget, evicting the least recently shown.
+
+pub struct Cache<T> {
+    budget: usize,
+    used: usize,
+    /// Most recently shown first.
+    entries: Vec<Entry<T>>,
+}
+
+struct Entry<T> {
+    wid: u32,
+    bytes: usize,
+    payload: T,
+}
+
+impl<T> Cache<T> {
+    pub fn new(budget: usize) -> Self {
+        Self {
+            budget,
+            used: 0,
+            entries: Vec::new(),
+        }
+    }
+
+    /// The cached preview for `wid`, marking it just-shown.
+    pub fn shown(&mut self, wid: u32) -> Option<&T> {
+        let index = self.entries.iter().position(|e| e.wid == wid)?;
+        let entry = self.entries.remove(index);
+        self.entries.insert(0, entry);
+        self.entries.first().map(|e| &e.payload)
+    }
+
+    /// Inserts or refreshes `wid` — a refresh keeps its recency slot — then
+    /// evicts least-recently-shown entries until the budget holds again.
+    pub fn insert(&mut self, wid: u32, payload: T, bytes: usize) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.wid == wid) {
+            self.used = self.used - entry.bytes + bytes;
+            entry.bytes = bytes;
+            entry.payload = payload;
+        } else {
+            self.used += bytes;
+            self.entries.insert(
+                0,
+                Entry {
+                    wid,
+                    bytes,
+                    payload,
+                },
+            );
+        }
+        while self.used > self.budget {
+            let Some(evicted) = self.entries.pop() else {
+                break;
+            };
+            self.used -= evicted.bytes;
+        }
+    }
+
+    /// Forgets windows that no longer exist.
+    pub fn retain(&mut self, alive: impl Fn(u32) -> bool) {
+        self.entries.retain(|e| alive(e.wid));
+        self.used = self.entries.iter().map(|e| e.bytes).sum();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wids<T>(cache: &Cache<T>) -> Vec<u32> {
+        cache.entries.iter().map(|e| e.wid).collect()
+    }
+
+    #[test]
+    fn miss_is_none() {
+        let mut cache: Cache<()> = Cache::new(10);
+        assert!(cache.shown(1).is_none());
+    }
+
+    #[test]
+    fn shown_marks_recency() {
+        let mut cache = Cache::new(10);
+        for wid in [1, 2, 3] {
+            cache.insert(wid, (), 1);
+        }
+        assert_eq!(wids(&cache), [3, 2, 1]);
+        assert!(cache.shown(1).is_some());
+        assert_eq!(wids(&cache), [1, 3, 2]);
+    }
+
+    #[test]
+    fn evicts_least_recently_shown() {
+        let mut cache = Cache::new(3);
+        for wid in [1, 2, 3] {
+            cache.insert(wid, (), 1);
+        }
+        cache.shown(1);
+        cache.insert(4, (), 1);
+        assert_eq!(wids(&cache), [4, 1, 3]);
+        assert!(cache.shown(2).is_none());
+    }
+
+    #[test]
+    fn refresh_keeps_slot_and_rebalances_budget() {
+        let mut cache = Cache::new(4);
+        cache.insert(1, (), 3);
+        cache.insert(2, (), 1);
+        cache.insert(1, (), 1);
+        assert_eq!(wids(&cache), [2, 1]);
+        cache.insert(3, (), 2);
+        assert_eq!(wids(&cache), [3, 2, 1]);
+    }
+
+    #[test]
+    fn budget_is_hard_even_for_a_fresh_entry() {
+        let mut cache = Cache::new(1);
+        cache.insert(1, (), 2);
+        assert!(cache.shown(1).is_none());
+    }
+
+    #[test]
+    fn retain_forgets_dead_windows() {
+        let mut cache = Cache::new(10);
+        for wid in [1, 2, 3] {
+            cache.insert(wid, (), 1);
+        }
+        cache.retain(|wid| wid != 2);
+        assert_eq!(wids(&cache), [3, 1]);
+        cache.insert(4, (), 8);
+        assert_eq!(wids(&cache), [4, 3, 1]);
+    }
+}
