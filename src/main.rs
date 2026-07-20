@@ -196,13 +196,17 @@ fn strip_demo() {
     let tiles: Vec<ui::Tile> = ws
         .windows(&space_ids)
         .into_iter()
-        .filter(|w| w.level == 0)
+        .filter(|w| w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable())
         .take(9)
-        .map(|w| ui::Tile {
-            preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
-            app: w.app.unwrap_or_default(),
-            title: w.title.unwrap_or_default(),
-            pid: w.pid,
+        .map(|w| {
+            let state = model::WindowState::decode(w.tags, w.attributes);
+            ui::Tile {
+                preview: capturer.as_ref().and_then(|c| c.window_image(w.wid)),
+                app: w.app.unwrap_or_default(),
+                title: w.title.unwrap_or_default(),
+                pid: w.pid,
+                badge: model::badge(state.minimized, false, None),
+            }
         })
         .collect();
 

@@ -145,6 +145,7 @@ struct Candidate {
     wid: u32,
     app: String,
     title: String,
+    badge: String,
 }
 
 fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
@@ -153,7 +154,36 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
         title: c.title.clone(),
         pid: c.pid,
         preview,
+        badge: c.badge.clone(),
     }
+}
+
+/// What a Space contributes to a window's badge: fullscreen Spaces get the ⤢
+/// marker, user Spaces off screen get their Desktop number.
+struct SpaceMark {
+    fullscreen: bool,
+    current: bool,
+    desktop: usize,
+}
+
+fn space_marks(spaces: &[winsrv::SpaceInfo]) -> std::collections::HashMap<u64, SpaceMark> {
+    let mut desktop = 0;
+    spaces
+        .iter()
+        .map(|s| {
+            if !s.fullscreen {
+                desktop += 1;
+            }
+            (
+                s.id,
+                SpaceMark {
+                    fullscreen: s.fullscreen,
+                    current: s.current,
+                    desktop,
+                },
+            )
+        })
+        .collect()
 }
 
 /// The preview cache's hard byte budget; at tile-sized thumbnails this is on
@@ -293,9 +323,13 @@ impl App {
     }
 
     fn enumerate(&mut self, modifier: Modifier) -> Vec<Candidate> {
-        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
+        let spaces = self.ws.spaces();
+        let marks = space_marks(&spaces);
+        let space_ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
         let mut windows = self.ws.windows(&space_ids);
-        windows.retain(|w| w.level == 0);
+        windows.retain(|w| {
+            w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
+        });
 
         // Order by our own recency, not the WindowServer stacking query, which
         // stops reflecting focus after a couple of switches.
@@ -318,11 +352,20 @@ impl App {
         }
         ordered
             .into_iter()
-            .map(|w| Candidate {
-                pid: w.pid,
-                wid: w.wid,
-                app: w.app.unwrap_or_default(),
-                title: w.title.unwrap_or_default(),
+            .map(|w| {
+                let state = model::WindowState::decode(w.tags, w.attributes);
+                let mark = self.ws.window_space(w.wid).and_then(|id| marks.get(&id));
+                let (fullscreen, desktop) = mark.map_or((false, None), |m| {
+                    let desktop = (!m.fullscreen && !m.current).then_some(m.desktop);
+                    (m.fullscreen, desktop)
+                });
+                Candidate {
+                    pid: w.pid,
+                    wid: w.wid,
+                    app: w.app.unwrap_or_default(),
+                    title: w.title.unwrap_or_default(),
+                    badge: model::badge(state.minimized, fullscreen, desktop),
+                }
             })
             .collect()
     }

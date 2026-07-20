@@ -4,7 +4,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
+    NSBackingStoreType, NSColor, NSFont, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
     NSRunningApplication, NSScreen, NSTextAlignment, NSTextField, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -22,6 +22,9 @@ pub struct Tile {
     /// A live window screenshot, when previews are available (Gallery style).
     /// `None` falls back to the app-icon layout (Icons style / no permission).
     pub preview: Option<CFRetained<CGImage>>,
+    /// State markers (minimized ●, fullscreen ⤢, Desktop number), already
+    /// composed; empty shows no chip.
+    pub badge: String,
 }
 
 const TILE_W: f64 = 168.0;
@@ -195,7 +198,36 @@ impl Strip {
             Some(image) => self.fill_preview(&view, tile, image),
             None => self.fill_icon(&view, tile),
         }
+        if !tile.badge.is_empty() {
+            self.add_badge(&view, &tile.badge);
+        }
         view
+    }
+
+    /// The state-marker chip, a rounded scrim in the tile's top-right corner.
+    fn add_badge(&self, view: &NSView, badge: &str) {
+        let label = NSTextField::labelWithString(&NSString::from_str(badge), self.mtm);
+        label.setTextColor(Some(&NSColor::whiteColor()));
+        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        label.sizeToFit();
+        let text = label.frame().size;
+        let (w, h) = (text.width + 10.0, text.height + 4.0);
+        let chip = NSView::initWithFrame(
+            self.mtm.alloc(),
+            NSRect::new(
+                NSPoint::new(TILE_W - w - 6.0, TILE_H - h - 6.0),
+                NSSize::new(w, h),
+            ),
+        );
+        chip.setWantsLayer(true);
+        if let Some(layer) = chip.layer() {
+            let scrim = NSColor::colorWithWhite_alpha(0.0, 0.5).CGColor();
+            layer.setBackgroundColor(Some(&scrim));
+            layer.setCornerRadius(h / 2.0);
+        }
+        label.setFrameOrigin(NSPoint::new(5.0, 2.0));
+        chip.addSubview(&label);
+        view.addSubview(&chip);
     }
 
     /// Gallery tile: the screenshot fills the tile, with a scrimmed caption bar
