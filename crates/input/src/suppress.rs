@@ -1,3 +1,4 @@
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -35,6 +36,12 @@ impl Suppression {
         let watchdog = Command::new(exe)
             .arg(WATCHDOG_FLAG)
             .arg(std::process::id().to_string())
+            // Own process group: a terminal's SIGINT/SIGHUP goes to the parent's
+            // foreground group. Sharing it would kill the watchdog alongside us,
+            // and signals don't run `Drop` — the switcher would stay suppressed.
+            // Detached, the watchdog outlives a Ctrl+C'd parent and restores on
+            // reparent. Restoration is the hard invariant (PRD §4.1, §8.4).
+            .process_group(0)
             .spawn()
             .ok()?;
         set_switcher_enabled(set, false);
