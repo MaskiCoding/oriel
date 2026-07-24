@@ -101,8 +101,8 @@ fn raise_matching(app: AxRef, wid: u32) -> bool {
                     );
                 }
             }
-            unsafe { AXUIElementPerformAction(element, as_ptr(&raise_action)) };
-            return true;
+            let raise_err = unsafe { AXUIElementPerformAction(element, as_ptr(&raise_action)) };
+            return raise_err == AX_SUCCESS;
         }
     }
     false
