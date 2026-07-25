@@ -1,11 +1,13 @@
 //! Pure state: windows, apps, spaces, MRU, and the filter/order/group/match resolvers.
 
+mod filter;
 mod lens;
 mod mru;
 mod session;
 mod spaces;
 mod state;
 
+pub use filter::{Field, Match, Tier, filter, match_str, match_window};
 pub use lens::{
     AppKey, AppScope, Disposition, Grouping, Lens, Order, ResolveCtx, ScreenId, ScreenScope,
     SpaceId, SpaceScope, Window, resolve,
