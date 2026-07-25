@@ -181,6 +181,33 @@ pub struct Rule {
     pub pass_triggers: Option<PassTriggers>,
     #[serde(default)]
     pub hide_windows: Option<HideWindows>,
+    #[serde(default)]
+    pub hide_title_substrings: Vec<String>,
+}
+
+impl Rule {
+    pub fn to_model_rule(&self) -> model::Rule {
+        model::Rule {
+            bundle_prefix: self.bundle_prefix.clone(),
+            hide: match self.hide_windows {
+                None | Some(HideWindows::Never) => model::HideWindows::Never,
+                Some(HideWindows::Always) => model::HideWindows::Always,
+                Some(HideWindows::Windowless) => model::HideWindows::Windowless,
+                Some(HideWindows::TitleContains) => {
+                    model::HideWindows::TitleContains(self.hide_title_substrings.clone())
+                }
+            },
+            pass: match self.pass_triggers {
+                None | Some(PassTriggers::Never) => model::PassTriggers::Never,
+                Some(PassTriggers::Always) => model::PassTriggers::Always,
+                Some(PassTriggers::Fullscreen) => model::PassTriggers::Fullscreen,
+            },
+        }
+    }
+}
+
+pub fn to_model_rules(rules: &[Rule]) -> model::Rules {
+    model::Rules::new(rules.iter().map(Rule::to_model_rule).collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,11 +305,13 @@ pub(crate) fn default_rules() -> Vec<Rule> {
             bundle_prefix: "com.parallels.".into(),
             pass_triggers: Some(PassTriggers::Always),
             hide_windows: None,
+            hide_title_substrings: Vec::new(),
         },
         Rule {
             bundle_prefix: "com.apple.finder".into(),
             pass_triggers: None,
             hide_windows: Some(HideWindows::Windowless),
+            hide_title_substrings: Vec::new(),
         },
     ]
 }
