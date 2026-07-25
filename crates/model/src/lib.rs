@@ -3,6 +3,7 @@
 mod filter;
 mod lens;
 mod mru;
+mod rules;
 mod session;
 mod spaces;
 mod state;
@@ -13,6 +14,7 @@ pub use lens::{
     SpaceId, SpaceScope, Window, resolve,
 };
 pub use mru::Mru;
+pub use rules::{HideWindows, PassTriggers, Rule, Rules};
 pub use session::Session;
 pub use spaces::{SpaceDesc, SpaceMap};
 pub use state::WindowState;
