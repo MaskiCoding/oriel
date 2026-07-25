@@ -1,71 +1,40 @@
 //! The M1 loop: hold a trigger, cycle with taps, release to jump.
 
 use std::cell::{Cell, RefCell};
+use std::panic::AssertUnwindSafe;
 use std::rc::{Rc, Weak};
 
+use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
 
-mod dispatch {
-    use core::ffi::c_void;
-    #[repr(C)]
-    pub struct Queue([u8; 0]);
-    unsafe extern "C" {
-        pub static _dispatch_main_q: Queue;
-        pub fn dispatch_time(when: u64, delta: i64) -> u64;
-        pub fn dispatch_after_f(
-            when: u64,
-            queue: *const Queue,
-            context: *mut c_void,
-            work: unsafe extern "C" fn(*mut c_void),
-        );
-        pub fn dispatch_async_f(
-            queue: *const Queue,
-            context: *mut c_void,
-            work: unsafe extern "C" fn(*mut c_void),
-        );
-    }
-}
-
-unsafe extern "C" fn call_boxed(ctx: *mut core::ffi::c_void) {
-    let work: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx.cast()) };
-    // `call_boxed` is plain `extern "C"`, so a panic must not unwind into libdispatch.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-}
-
 /// Runs `work` on the main run loop after `delay_ms`, outside the current event
 /// handler. Focus can't be done from inside the hot-key handler that consumed
 /// the triggering event (the `WindowServer` ignores it), and the `WindowServer`
 /// also needs a moment to settle after the event before it accepts one.
+/// Callers capture `Rc` and must already be on the main thread.
 fn on_main_after(delay_ms: u64, work: impl FnOnce() + 'static) {
-    let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
+    let mtm = MainThreadMarker::new().expect("on_main_after requires the main thread");
+    let work = MainThreadBound::new(work, mtm);
     let nanos = i64::try_from(delay_ms)
         .unwrap_or(i64::MAX)
         .saturating_mul(1_000_000);
-    unsafe {
-        let when = dispatch::dispatch_time(0, nanos);
-        dispatch::dispatch_after_f(
-            when,
-            &raw const dispatch::_dispatch_main_q,
-            Box::into_raw(boxed).cast(),
-            call_boxed,
-        );
-    }
+    let when = DispatchTime::NOW.time(nanos);
+    let _ = DispatchQueue::main().after(when, move || {
+        let mtm = MainThreadMarker::new().expect("dispatch main queue");
+        let work = work.into_inner(mtm);
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(work));
+    });
 }
 
 /// Runs `work` on the main run loop; callable from any thread — the capture
 /// worker uses it to hand finished previews back.
 fn on_main(work: impl FnOnce() + Send + 'static) {
-    let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(work));
-    unsafe {
-        dispatch::dispatch_async_f(
-            &raw const dispatch::_dispatch_main_q,
-            Box::into_raw(boxed).cast(),
-            call_boxed,
-        );
-    }
+    DispatchQueue::main().exec_async(move || {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(work));
+    });
 }
 
 thread_local! {

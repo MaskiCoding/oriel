@@ -38,6 +38,7 @@ workspace = true
 ax = { version = "0.1.0", path = "crates/ax" }
 block2 = "0.6"
 capture = { version = "0.1.0", path = "crates/capture" }
+dispatch2 = "0.3.1"
 input = { version = "0.1.0", path = "crates/input" }
 model = { version = "0.1.0", path = "crates/model" }
 objc2 = "0.6.4"
