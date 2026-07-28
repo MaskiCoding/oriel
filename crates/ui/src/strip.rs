@@ -1539,33 +1539,42 @@ impl Strip {
         // Fields of colour that drift past each other, not one gradient sweeping
         // corner to corner: a sweep reads as a scan and the eye follows it.
         //
-        // Each field is a radial fade to nothing, and each is far larger than
-        // the tile — two to three times over. That size is the whole trick. A
-        // blob the size of the tile shows its own edge and reads as a spotlight
-        // thrown on the window; at this scale only the gentle middle of the
-        // falloff ever lands on the tile, so the preview sits under one soft
-        // wash rather than under a circle. They are correspondingly faint,
-        // since four of them overlap everywhere.
+        // Each field is a radial fade to nothing, sized so its brighter middle
+        // lands on the tile — close enough to have presence rather than being a
+        // flat wash. What kept it from reading as a spotlight is shape: each is
+        // an ellipse at its own angle, never a circle, and four of them overlap
+        // at different orientations so no single outline is ever legible.
         //
         // Each drifts on its own two periods, deliberately unequal and sharing
         // no common factor, so the paths never resynchronise and the colour
         // keeps recombining instead of looping visibly.
         let reach = bounds.size.width.max(bounds.size.height);
-        for (red, green, blue, alpha, size, sway, x_secs, y_secs) in [
-            (0.30, 0.74, 1.00, 0.20, 2.4, 0.16, 13.0, 17.0),
-            (0.58, 0.42, 1.00, 0.18, 2.8, 0.18, 19.0, 11.0),
-            (0.34, 1.00, 0.78, 0.15, 2.2, 0.14, 23.0, 15.0),
-            (1.00, 0.48, 0.72, 0.14, 2.6, 0.17, 16.0, 21.0),
+        for (red, green, blue, alpha, size, stretch, tilt, sway, x_secs, y_secs) in [
+            (0.30, 0.74, 1.00, 0.36, 1.35, 1.8, 0.40, 0.20, 13.0, 17.0),
+            (0.58, 0.42, 1.00, 0.32, 1.55, 1.5, -0.70, 0.22, 19.0, 11.0),
+            (0.34, 1.00, 0.78, 0.28, 1.25, 2.1, 1.10, 0.18, 23.0, 15.0),
+            (1.00, 0.48, 0.72, 0.26, 1.45, 1.6, -0.30, 0.21, 16.0, 21.0),
         ] {
             let span = reach * size;
+            let (wide, tall) = (span * stretch, span / stretch);
             let blob = CAGradientLayer::new();
             blob.setFrame(NSRect::new(
                 NSPoint::new(
-                    bounds.size.width.mul_add(0.5, -(span / 2.0)),
-                    bounds.size.height.mul_add(0.5, -(span / 2.0)),
+                    bounds.size.width.mul_add(0.5, -(wide / 2.0)),
+                    bounds.size.height.mul_add(0.5, -(tall / 2.0)),
                 ),
-                NSSize::new(span, span),
+                NSSize::new(wide, tall),
             ));
+            // A radial gradient fills its layer's box, so an oblong layer gives
+            // an ellipse; turning each one differently is what stops four
+            // overlapping fields from ever resolving into a recognisable shape.
+            unsafe {
+                let _: () = msg_send![
+                    &*blob,
+                    setValue: &*NSNumber::new_f64(tilt),
+                    forKeyPath: &*NSString::from_str("transform.rotation.z")
+                ];
+            }
 
             let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
             for color in [
