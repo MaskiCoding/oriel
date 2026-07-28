@@ -131,7 +131,17 @@ pub fn event_chars(event: &CGEvent) -> String {
 
 /// Whether `chars` should append to the Filter query (no control characters).
 pub fn is_typing(chars: &str) -> bool {
-    !chars.is_empty() && chars.chars().all(|c| !c.is_control())
+    !chars.is_empty()
+        && chars
+            .chars()
+            .all(|c| !c.is_control() && !is_function_key(c))
+}
+
+/// Arrows, F-keys, Home/End and friends arrive as Unicode private-use
+/// characters, which are not control characters — without this they would be
+/// typed into the Filter query instead of moving the selection.
+fn is_function_key(c: char) -> bool {
+    ('\u{e000}'..='\u{f8ff}').contains(&c)
 }
 
 /// Cmd/Ctrl held — not a Filter keystroke.
@@ -187,6 +197,11 @@ mod tests {
         assert!(!is_typing(""));
         assert!(!is_typing("\u{1b}"));
         assert!(!is_typing("\n"));
+        // AppKit reports arrows and F-keys in the private use area.
+        assert!(!is_typing("\u{f700}")); // up
+        assert!(!is_typing("\u{f702}")); // left
+        assert!(!is_typing("\u{f704}")); // F1
+        assert!(!is_typing("a\u{f702}")); // mixed is still not typing
     }
 
     #[test]
