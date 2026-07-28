@@ -677,6 +677,22 @@ impl Strip {
         }
     }
 
+    /// Index of the screen `show_on` selects, in `NSScreen::screens` order —
+    /// so the lens resolver's `strip-screen` scope filters on the screen the
+    /// strip will actually appear on.
+    pub fn screen_index(&self, show_on: ShowOn) -> u32 {
+        let Some(target) = self.target_screen(show_on) else {
+            return 0;
+        };
+        let screens = NSScreen::screens(self.mtm);
+        for i in 0..screens.count() {
+            if screens.objectAtIndex(i) == target {
+                return u32::try_from(i).unwrap_or(0);
+            }
+        }
+        0
+    }
+
     fn tile(&self, tile: &Tile, style: Style, m: &Metrics, dark: bool) -> Retained<NSView> {
         match style {
             Style::Gallery => self.gallery_tile(tile, m, dark),

@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
 
@@ -378,7 +378,7 @@ impl App {
 
         let ctx = model::ResolveCtx {
             active_app: frontmost_pid(),
-            strip_screen: strip_screen_index(binding.look.show_on),
+            strip_screen: self.strip.screen_index(binding.look.show_on),
         };
         let ordered = model::resolve(&binding.model, &snap.windows, &ctx);
 
@@ -466,39 +466,6 @@ fn frontmost_pid() -> i32 {
     NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .map_or(0, |app| app.processIdentifier())
-}
-
-/// Screen index matching `snapshot`'s `NSScreen::screens` order for the strip.
-fn strip_screen_index(show_on: ui::ShowOn) -> u32 {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return 0;
-    };
-    let screens = NSScreen::screens(mtm);
-    let n = screens.count();
-    if n == 0 {
-        return 0;
-    }
-    let target = match show_on {
-        ui::ShowOn::MenubarScreen => screens.firstObject().or_else(|| NSScreen::mainScreen(mtm)),
-        // Pointer follows the mouse; without a shared mouse helper, active screen.
-        ui::ShowOn::ActiveScreen | ui::ShowOn::PointerScreen => NSScreen::mainScreen(mtm),
-    };
-    let Some(target) = target else {
-        return 0;
-    };
-    let target_frame = target.frame();
-    for i in 0..n {
-        let screen = screens.objectAtIndex(i);
-        let frame = screen.frame();
-        if (frame.origin.x - target_frame.origin.x).abs() < f64::EPSILON
-            && (frame.origin.y - target_frame.origin.y).abs() < f64::EPSILON
-            && (frame.size.width - target_frame.size.width).abs() < f64::EPSILON
-            && (frame.size.height - target_frame.size.height).abs() < f64::EPSILON
-        {
-            return u32::try_from(i).unwrap_or(0);
-        }
-    }
-    0
 }
 
 /// The window id of the current frontmost app's focused window, so the MRU can
