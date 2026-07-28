@@ -1521,53 +1521,70 @@ impl Strip {
     fn lantern_glass(&self, bounds: NSRect) -> Retained<NSView> {
         let glass = NSView::initWithFrame(self.mtm.alloc(), bounds);
         glass.setWantsLayer(true);
-        let gradient = CAGradientLayer::new();
-        gradient.setFrame(bounds);
+        let Some(host) = glass.layer() else {
+            return glass;
+        };
+        host.setMasksToBounds(true);
 
-        // Pearlescent rather than tinted: the hues are real — pink, warm cream,
-        // lilac, ice — but each is laid on thinly enough to read as a sheen
-        // instead of a colour. Near-white stops at a higher opacity looked like
-        // frosted glass rather than shell. The middle stop is near-clear, so
-        // the light gathers at the edges and sweeps across as it drifts while
-        // the centre of the preview stays readable. A flat veil at an alpha you
-        // could actually see would just stain the window instead.
-        let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
-        for (r, g, b, a) in [
-            (1.00, 0.80, 0.86, 0.20),
-            (1.00, 0.94, 0.78, 0.16),
-            (1.00, 1.00, 1.00, 0.02),
-            (0.84, 0.80, 1.00, 0.16),
-            (0.78, 0.96, 1.00, 0.20),
+        // Soft blobs of colour that drift past each other, not one gradient
+        // sweeping corner to corner: a sweep reads as a scan, and the eye
+        // follows it. Each blob is a radial fade to nothing, and each drifts on
+        // its own two periods — the x and y durations are deliberately unequal
+        // and mutually prime-ish, so the paths never resynchronise and the
+        // colour underneath keeps recombining instead of looping visibly.
+        let reach = bounds.size.width.max(bounds.size.height);
+        for (red, green, blue, alpha, size, sway, x_secs, y_secs) in [
+            (0.62, 0.90, 1.00, 0.30, 0.95, 0.22, 13.0, 17.0),
+            (0.80, 0.76, 1.00, 0.26, 1.10, 0.26, 19.0, 11.0),
+            (0.72, 1.00, 0.93, 0.22, 0.85, 0.20, 23.0, 15.0),
+            (1.00, 0.86, 0.92, 0.20, 0.90, 0.24, 16.0, 21.0),
         ] {
-            let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a);
-            let cg = color.CGColor();
-            let ptr: *const AnyObject = (&raw const *cg).cast();
-            let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
-        }
-        unsafe {
-            let _: () = msg_send![&*gradient, setColors: &*colors];
-            let _: () = msg_send![&*gradient, setStartPoint: NSPoint::new(0.0, 1.0)];
-            let _: () = msg_send![&*gradient, setEndPoint: NSPoint::new(1.0, 0.0)];
-        }
-        gradient.setLocations(Some(&stops(&[0.0, 0.25, 0.5, 0.75, 1.0])));
+            let span = reach * size;
+            let blob = CAGradientLayer::new();
+            blob.setFrame(NSRect::new(
+                NSPoint::new(
+                    bounds.size.width.mul_add(0.5, -(span / 2.0)),
+                    bounds.size.height.mul_add(0.5, -(span / 2.0)),
+                ),
+                NSSize::new(span, span),
+            ));
 
-        let drift = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("locations")));
-        // SAFETY: both values are gradient-stop arrays, which is what the
-        // `locations` key path expects.
-        unsafe {
-            drift.setFromValue(Some(&stops(&[-0.9, -0.5, -0.1, 0.3, 0.7])));
-            drift.setToValue(Some(&stops(&[0.3, 0.7, 1.1, 1.5, 1.9])));
-            drift.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
-                &NSString::from_str("easeInEaseOut"),
-            )));
-        }
-        drift.setDuration(9.0);
-        drift.setAutoreverses(true);
-        drift.setRepeatCount(f32::INFINITY);
-        gradient.addAnimation_forKey(&drift, Some(&NSString::from_str("lantern")));
+            let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
+            for color in [
+                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha),
+                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 0.0),
+            ] {
+                let cg = color.CGColor();
+                let ptr: *const AnyObject = (&raw const *cg).cast();
+                let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
+            }
+            unsafe {
+                let _: () = msg_send![&*blob, setColors: &*colors];
+                let _: () = msg_send![&*blob, setType: &*NSString::from_str("radial")];
+                let _: () = msg_send![&*blob, setStartPoint: NSPoint::new(0.5, 0.5)];
+                let _: () = msg_send![&*blob, setEndPoint: NSPoint::new(1.0, 1.0)];
+            }
+            blob.setLocations(Some(&stops(&[0.0, 1.0])));
 
-        if let Some(host) = glass.layer() {
-            host.addSublayer(&gradient);
+            for (axis, seconds) in [("x", x_secs), ("y", y_secs)] {
+                let travel = reach * sway;
+                let path = format!("transform.translation.{axis}");
+                let slide =
+                    CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(&path)));
+                // SAFETY: a translation component takes a plain number.
+                unsafe {
+                    slide.setFromValue(Some(&NSNumber::new_f64(-travel)));
+                    slide.setToValue(Some(&NSNumber::new_f64(travel)));
+                    slide.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+                        &NSString::from_str("easeInEaseOut"),
+                    )));
+                }
+                slide.setDuration(seconds);
+                slide.setAutoreverses(true);
+                slide.setRepeatCount(f32::INFINITY);
+                blob.addAnimation_forKey(&slide, Some(&NSString::from_str(&path)));
+            }
+            host.addSublayer(&blob);
         }
         glass
     }
