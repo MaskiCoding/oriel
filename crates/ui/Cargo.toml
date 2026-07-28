@@ -30,6 +30,7 @@ features = [
     "NSFont",
     "NSGraphics",
     "NSImage",
+    "NSImageCell",
     "NSImageView",
     "NSMenu",
     "NSMenuItem",

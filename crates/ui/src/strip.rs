@@ -7,8 +7,8 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImageView, NSPanel, NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen, NSTextField,
-    NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSImageScaling, NSImageView, NSPanel, NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen,
+    NSTextField, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
@@ -496,6 +496,21 @@ fn set_highlight(tile: &NSView, on: bool, dark: bool) {
     }
 }
 
+/// An image view that scales its image to fill `side` in both directions.
+/// `NSRunningApplication`'s icon reports a 32 pt size and the default scaling
+/// mode never enlarges, so a large icon tile would otherwise draw it tiny.
+fn scaled_icon_view(
+    mtm: MainThreadMarker,
+    icon: &objc2_app_kit::NSImage,
+    frame: NSRect,
+) -> Retained<NSImageView> {
+    let view = NSImageView::new(mtm);
+    view.setImage(Some(icon));
+    view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+    view.setFrame(frame);
+    view
+}
+
 fn app_icon(pid: i32) -> Option<Retained<objc2_app_kit::NSImage>> {
     NSRunningApplication::runningApplicationWithProcessIdentifier(pid).and_then(|app| app.icon())
 }
@@ -937,14 +952,12 @@ impl Strip {
 
         let icon_s = m.icons_icon;
         if let Some(icon) = app_icon(tile.pid) {
-            let image = NSImageView::new(self.mtm);
-            image.setImage(Some(&icon));
             let icon_y = m.inset + m.caption_h + ICONS_GAP;
-            image.setFrame(NSRect::new(
+            let frame = NSRect::new(
                 NSPoint::new((width - icon_s) / 2.0, icon_y),
                 NSSize::new(icon_s, icon_s),
-            ));
-            view.addSubview(&image);
+            );
+            view.addSubview(&scaled_icon_view(self.mtm, &icon, frame));
         }
 
         self.caption_row(&view, tile, width, m.inset, m.caption_h, m, dark, false);
@@ -1161,16 +1174,14 @@ impl Strip {
     fn icon_surface(&self, pid: i32, width: f64, m: &Metrics) -> Retained<NSView> {
         let host = NSView::initWithFrame(self.mtm.alloc(), Self::surface_frame(width, m));
         if let Some(icon) = app_icon(pid) {
-            let image = NSImageView::new(self.mtm);
-            image.setImage(Some(&icon));
-            image.setFrame(NSRect::new(
+            let frame = NSRect::new(
                 NSPoint::new(
                     (width - 2.0 * m.inset - m.icon) / 2.0,
                     (m.preview_h - m.icon) / 2.0,
                 ),
                 NSSize::new(m.icon, m.icon),
-            ));
-            host.addSubview(&image);
+            );
+            host.addSubview(&scaled_icon_view(self.mtm, &icon, frame));
         }
         host
     }
