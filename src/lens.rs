@@ -158,15 +158,27 @@ pub fn bindings_from_config(cfg: &config::Config) -> Vec<Binding> {
 
 pub fn triggers_for(bindings: &[Binding]) -> Vec<input::Trigger> {
     let mut triggers = Vec::with_capacity(bindings.len() * 2);
+    let mut claimed: Vec<(u32, u32)> = Vec::new();
+    let mut claim = |key: u32, modifiers: u32| {
+        let combo = (key, modifiers);
+        if claimed.contains(&combo) {
+            return false;
+        }
+        claimed.push(combo);
+        true
+    };
     for (i, b) in bindings.iter().enumerate() {
-        triggers.push(input::Trigger {
-            id: hotkey_id(i, false),
-            key: b.key,
-            modifiers: b.modifiers,
-        });
-        // Shift is the reverse key; skip when the trigger already includes it
-        // so Carbon does not see a duplicate registration.
-        if b.modifiers & input::SHIFT == 0 {
+        if claim(b.key, b.modifiers) {
+            triggers.push(input::Trigger {
+                id: hotkey_id(i, false),
+                key: b.key,
+                modifiers: b.modifiers,
+            });
+        }
+        // Shift is the reverse key; skip when the trigger already includes it,
+        // and never claim a combo an earlier lens already took — Carbon
+        // rejects a duplicate registration.
+        if b.modifiers & input::SHIFT == 0 && claim(b.key, b.modifiers | input::SHIFT) {
             triggers.push(input::Trigger {
                 id: hotkey_id(i, true),
                 key: b.key,

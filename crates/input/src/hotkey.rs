@@ -167,12 +167,13 @@ impl Hotkeys {
                     &raw mut hotkey,
                 )
             };
-            if status != 0 {
-                return None; // Drop unwinds the partial registration
+            // A combo another app already owns, or a duplicate in the config,
+            // fails to register. Skip it rather than losing every trigger.
+            if status == 0 {
+                this.registered.push(hotkey);
             }
-            this.registered.push(hotkey);
         }
-        Some(this)
+        (!this.registered.is_empty()).then_some(this)
     }
 }
 
