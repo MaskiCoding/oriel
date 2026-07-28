@@ -414,6 +414,12 @@ impl App {
             self.jump();
             return;
         }
+        // Same race, other branch: a Filter lens released this fast would open
+        // a session and then never see a release event to enter Filter on.
+        if binding.on_release == config::OnRelease::Filter && !held {
+            self.enter_filter(None);
+            return;
+        }
 
         if self.summon_delay_ms == 0 {
             self.reveal();
