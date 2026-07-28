@@ -249,11 +249,12 @@ fn strip_demo(style: ui::Style, query: Option<&str>) {
     let ws = winsrv::WindowServer::connect().expect("windowserver");
     let capturer = capture::Capturer::new();
     let space_ids: Vec<u64> = ws.spaces().iter().map(|s| s.id).collect();
-    let tiles: Vec<ui::Tile> = ws
-        .windows(&space_ids)
+    let mut shown = ws.windows(&space_ids);
+    shown.retain(|w| w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable());
+    shown.truncate(9);
+    ws.fill_titles(&mut shown);
+    let tiles: Vec<ui::Tile> = shown
         .into_iter()
-        .filter(|w| w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable())
-        .take(9)
         .map(|w| {
             let state = model::WindowState::decode(w.tags, w.attributes);
             ui::Tile {

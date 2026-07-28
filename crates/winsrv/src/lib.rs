@@ -132,11 +132,10 @@ impl WindowServer {
             let wid = unsafe { self.sl.SLSWindowIteratorGetWindowID.unwrap()(raw_ptr(&iter)) };
             let bounds = unsafe { self.sl.SLSWindowIteratorGetBounds.unwrap()(raw_ptr(&iter)) };
             let app = app_name(pid);
-            // WS title → app name (AX title is layered on by callers that have it).
-            let title = match self.window_title(wid) {
-                Some(t) if !t.trim().is_empty() => Some(t),
-                _ => app.clone(),
-            };
+            // Titles cost one IPC each and most of these rows get filtered out
+            // before anything is drawn, so they are filled in afterwards for the
+            // survivors only — see `fill_titles`.
+            let title = None;
             windows.push(WindowInfo {
                 wid,
                 pid,
@@ -160,6 +159,20 @@ impl WindowServer {
     /// The Space `wid` lives on. 0x7 asks across current, other, and
     /// minimized-window Spaces. Per-window by necessity: the batched form of
     /// the call returns the distinct Spaces of the set, not one per window.
+    /// Fills in `title` for the windows that survived filtering. Each one is a
+    /// separate `SLSCopyWindowProperty` round trip, so this deliberately runs
+    /// after the caller has discarded the rows it will never show. Falls back
+    /// to the app name, so a caption is never empty.
+    pub fn fill_titles(&self, windows: &mut [WindowInfo]) {
+        let key = CFString::from_str("kCGSWindowTitle");
+        for w in windows.iter_mut() {
+            w.title = match self.window_title_with(&key, w.wid) {
+                Some(t) if !t.trim().is_empty() => Some(t),
+                _ => w.app.clone(),
+            };
+        }
+    }
+
     /// Window id → Space id for every Space in `space_ids`.
     ///
     /// `SLSCopySpacesForWindows` answers with the *distinct* Spaces of the set
@@ -218,11 +231,12 @@ impl WindowServer {
         space.as_i64().map(i64::cast_unsigned)
     }
 
-    fn window_title(&self, wid: u32) -> Option<String> {
-        let key = CFString::from_str("kCGSWindowTitle");
+    /// The property key is built once by the caller — `CFString::from_str` per
+    /// window is pure overhead on a list of dozens.
+    fn window_title_with(&self, key: &CFRetained<CFString>, wid: u32) -> Option<String> {
         let mut out: skylight_sys::CFTypeRef = core::ptr::null();
         let err = unsafe {
-            self.sl.SLSCopyWindowProperty.unwrap()(self.cid, wid, raw_ptr(&key), &raw mut out)
+            self.sl.SLSCopyWindowProperty.unwrap()(self.cid, wid, raw_ptr(key), &raw mut out)
         };
         if err != 0 {
             return None;

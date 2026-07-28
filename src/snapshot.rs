@@ -221,6 +221,9 @@ pub fn snapshot_with(
     let space_ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
     let mut windows = ws.windows(&space_ids);
     windows.retain(switchable);
+    // Titles only for what survived: two thirds of the queried rows are ghosts
+    // or off-level windows that will never be drawn.
+    ws.fill_titles(&mut windows);
 
     let ids: Vec<model::WindowId> = windows.iter().map(|w| model::WindowId(w.wid)).collect();
     mru.sync(&ids);
