@@ -43,7 +43,7 @@ input = { version = "0.1.0", path = "crates/input" }
 model = { version = "0.1.0", path = "crates/model" }
 muda = { version = "0.19", default-features = false }
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace", "libc"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace", "libc"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSData", "NSDictionary", "NSError", "NSNotification", "NSString"] }

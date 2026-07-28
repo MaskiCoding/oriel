@@ -1,6 +1,9 @@
 //! `WindowServer` integration: enumeration, batched state queries, event tap, Space topology.
 
 mod focus;
+mod screen;
+
+pub use screen::screen_index;
 
 use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
@@ -29,7 +32,9 @@ pub struct WindowInfo {
     pub level: i32,
     pub tags: u64,
     pub attributes: u64,
-    /// On-screen frame in points; zero-sized when the `WindowServer` has none.
+    /// On-screen frame in points (top-left origin); zero-sized when the `WindowServer` has none.
+    pub x: f64,
+    pub y: f64,
     pub width: f64,
     pub height: f64,
     pub app: Option<String>,
@@ -133,6 +138,8 @@ impl WindowServer {
                 attributes: unsafe {
                     self.sl.SLSWindowIteratorGetAttributes.unwrap()(raw_ptr(&iter))
                 },
+                x: bounds.x,
+                y: bounds.y,
                 width: bounds.w,
                 height: bounds.h,
                 app: app_name(pid),
