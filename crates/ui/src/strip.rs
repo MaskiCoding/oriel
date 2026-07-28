@@ -1127,8 +1127,31 @@ impl Strip {
         panel.setHidesOnDeactivate(false);
 
         let mouse = Rc::new(MouseState::new());
+
+        // The effect view has to BE the window's content view. Behind-window
+        // vibrancy is drawn by the WindowServer into the window's own backing;
+        // nested inside a layer-backed, corner-masked parent it composites into
+        // that parent's layer instead and the blur never happens — the panel
+        // just looks dimly tinted. So the glass is the root and everything else
+        // lives inside it, with the rounded corners moved onto the glass.
+        let glass = NSVisualEffectView::new(mtm);
+        glass.setMaterial(material_for(true));
+        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        glass.setState(NSVisualEffectState::Active);
+        glass.setWantsLayer(true);
+        if let Some(layer) = glass.layer() {
+            layer.setCornerRadius(18.0);
+            layer.setMasksToBounds(true);
+            layer.setBorderWidth(1.0);
+        }
+
         let content = StripContentView::new(mtm, Rc::clone(&mouse));
         content.setWantsLayer(true);
+        content.setFrame(glass.bounds());
+        content.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         if let Some(layer) = content.layer() {
             layer.setCornerRadius(18.0);
             layer.setMasksToBounds(true);
@@ -1136,27 +1159,12 @@ impl Strip {
                 layer
                     .setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.12, 0.94).CGColor()));
             } else {
-                // The vibrancy view behind the tiles is the background.
+                // The glass underneath is the background.
                 layer.setBackgroundColor(None);
             }
-            layer.setBorderWidth(1.0);
         }
-
-        // Real vibrancy rather than a flat fill — the strip picks up what is
-        // behind it the way the Dock does. Added before any tile so it stays at
-        // the bottom, and sized with the view so a re-plan cannot leave a seam.
-        let glass = NSVisualEffectView::new(mtm);
-        glass.setHidden(vibrancy_off());
-        glass.setMaterial(material_for(true));
-        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        glass.setState(NSVisualEffectState::Active);
-        glass.setFrame(content.bounds());
-        glass.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        content.addSubview(&glass);
-        panel.setContentView(Some(&content));
+        glass.addSubview(&content);
+        panel.setContentView(Some(&glass));
 
         Self {
             mtm,
@@ -1432,7 +1440,7 @@ impl Strip {
     /// Vibrancy carries the background, so the theme only sets the hairline
     /// edge that separates the panel from whatever it is floating over.
     fn apply_theme(&self, dark: bool) {
-        if let Some(layer) = self.content.layer() {
+        if let Some(layer) = self.glass.layer() {
             let edge = if dark {
                 NSColor::colorWithWhite_alpha(1.0, 0.28)
             } else {
@@ -1516,18 +1524,20 @@ impl Strip {
         let gradient = CAGradientLayer::new();
         gradient.setFrame(bounds);
 
-        // Pearlescent rather than tinted: shell colours so pale they are almost
-        // white, carrying only a hint of hue. The middle stop is near-clear, so
+        // Pearlescent rather than tinted: the hues are real — pink, warm cream,
+        // lilac, ice — but each is laid on thinly enough to read as a sheen
+        // instead of a colour. Near-white stops at a higher opacity looked like
+        // frosted glass rather than shell. The middle stop is near-clear, so
         // the light gathers at the edges and sweeps across as it drifts while
         // the centre of the preview stays readable. A flat veil at an alpha you
         // could actually see would just stain the window instead.
         let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
         for (r, g, b, a) in [
-            (1.00, 0.99, 0.93, 0.34),
-            (1.00, 0.93, 0.95, 0.20),
-            (1.00, 1.00, 1.00, 0.03),
-            (0.93, 0.91, 1.00, 0.20),
-            (0.88, 0.96, 1.00, 0.34),
+            (1.00, 0.80, 0.86, 0.20),
+            (1.00, 0.94, 0.78, 0.16),
+            (1.00, 1.00, 1.00, 0.02),
+            (0.84, 0.80, 1.00, 0.16),
+            (0.78, 0.96, 1.00, 0.20),
         ] {
             let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a);
             let cg = color.CGColor();
