@@ -251,15 +251,33 @@ mod tests {
             vim_keys: false,
             ..config::Controls::default()
         };
-        assert_eq!(movement(123, &arrows), Some(Dir::Left));
-        assert_eq!(movement(4, &arrows), None);
+        for (code, dir) in [
+            (123, Dir::Left),
+            (124, Dir::Right),
+            (125, Dir::Down),
+            (126, Dir::Up),
+        ] {
+            assert_eq!(movement(code, &arrows), Some(dir), "arrow keycode {code}");
+        }
+        for code in [4, 38, 40, 37] {
+            assert_eq!(movement(code, &arrows), None, "vim keycode {code} leaked");
+        }
 
         let vim = config::Controls {
             arrow_keys: false,
             vim_keys: true,
             ..config::Controls::default()
         };
-        assert_eq!(movement(4, &vim), Some(Dir::Left));
-        assert_eq!(movement(123, &vim), None);
+        for (code, dir) in [
+            (4, Dir::Left),
+            (38, Dir::Down),
+            (40, Dir::Up),
+            (37, Dir::Right),
+        ] {
+            assert_eq!(movement(code, &vim), Some(dir), "vim keycode {code}");
+        }
+        for code in [123, 124, 125, 126] {
+            assert_eq!(movement(code, &vim), None, "arrow keycode {code} leaked");
+        }
     }
 }

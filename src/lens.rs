@@ -281,10 +281,21 @@ mod tests {
 
     #[test]
     fn hold_flags_maps_each_modifier_and_ignores_shift() {
-        assert!(hold_flags(input::CMD).contains(CGEventFlags::MaskCommand));
-        assert!(hold_flags(input::OPTION).contains(CGEventFlags::MaskAlternate));
-        assert!(hold_flags(input::CONTROL).contains(CGEventFlags::MaskControl));
-        assert!(hold_flags(input::SHIFT).is_empty());
+        // Equality, not `contains`: an implementation that set every flag
+        // would satisfy `contains` and then hold on any modifier at all.
+        assert_eq!(hold_flags(input::CMD), CGEventFlags::MaskCommand);
+        assert_eq!(hold_flags(input::OPTION), CGEventFlags::MaskAlternate);
+        assert_eq!(hold_flags(input::CONTROL), CGEventFlags::MaskControl);
+        assert_eq!(hold_flags(input::SHIFT), CGEventFlags::empty());
+        assert_eq!(hold_flags(0), CGEventFlags::empty());
+        assert_eq!(
+            hold_flags(input::CMD | input::SHIFT),
+            CGEventFlags::MaskCommand
+        );
+        assert_eq!(
+            hold_flags(input::CMD | input::OPTION),
+            CGEventFlags::MaskCommand | CGEventFlags::MaskAlternate
+        );
     }
 
     fn binding(key: u32, modifiers: u32) -> Binding {
@@ -303,10 +314,31 @@ mod tests {
         let bindings = [binding(48, input::CMD), binding(48, input::CMD)];
         let triggers = triggers_for(&bindings);
         let combos: Vec<(u32, u32)> = triggers.iter().map(|t| (t.key, t.modifiers)).collect();
-        let mut unique = combos.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(combos.len(), unique.len(), "a combo was registered twice");
+        // The exact set, not just "no duplicates" — an empty result would
+        // satisfy a uniqueness-only assertion while registering nothing.
+        assert_eq!(
+            combos,
+            vec![(48, input::CMD), (48, input::CMD | input::SHIFT)]
+        );
+        // The second lens contributed nothing, so only lens 0's ids appear.
+        let ids: Vec<u32> = triggers.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![hotkey_id(0, false), hotkey_id(0, true)]);
+    }
+
+    #[test]
+    fn distinct_triggers_each_get_a_forward_and_reverse() {
+        let bindings = [binding(48, input::CMD), binding(48, input::OPTION)];
+        let triggers = triggers_for(&bindings);
+        let combos: Vec<(u32, u32)> = triggers.iter().map(|t| (t.key, t.modifiers)).collect();
+        assert_eq!(
+            combos,
+            vec![
+                (48, input::CMD),
+                (48, input::CMD | input::SHIFT),
+                (48, input::OPTION),
+                (48, input::OPTION | input::SHIFT),
+            ]
+        );
     }
 
     #[test]
