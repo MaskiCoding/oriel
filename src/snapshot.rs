@@ -232,6 +232,12 @@ pub fn snapshot_with(
         .filter_map(|id| by_wid.remove(&id.0))
         .collect();
 
+    // One round trip per Space, not per window — only when a badge is possible.
+    let by_space = if map.uniform() {
+        HashMap::new()
+    } else {
+        ws.windows_by_space(&space_ids)
+    };
     let frames = screen_frames();
     let mut seen_apps = HashSet::new();
     let mut out_windows = Vec::with_capacity(ordered.len());
@@ -251,7 +257,7 @@ pub fn snapshot_with(
         let space = if map.uniform() {
             None
         } else {
-            ws.window_space(w.wid)
+            by_space.get(&w.wid).copied()
         };
         let mark = space.and_then(|id| marks.get(&id));
         let is_main = seen_apps.insert(w.pid);

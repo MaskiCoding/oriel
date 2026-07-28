@@ -1247,11 +1247,20 @@ impl App {
             return;
         }
 
+        // Boot refuses to run with no usable lens; a reload must not sneak the
+        // app into that state either. Suppression would stay engaged with
+        // nothing registered to answer ⌘⇥, leaving no switcher at all.
+        let bindings = lens::bindings_from_config(&cfg);
+        if bindings.is_empty() {
+            println!("config: reload ignored — no lens has a usable trigger");
+            return;
+        }
+
         let login_changed = cfg.start_at_login != self.config.start_at_login;
         let menubar_wanted = cfg.menubar_icon;
         let menubar_changed = menubar_wanted != self.config.menubar_icon;
 
-        self.bindings = lens::bindings_from_config(&cfg);
+        self.bindings = bindings;
         self.summon_delay_ms = cfg.summon_delay_ms.min(900);
         self.action_keys = ActionKeys::resolve(&cfg.keys);
         self.controls = cfg.controls.clone();

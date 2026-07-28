@@ -5,6 +5,8 @@ mod screen;
 
 pub use screen::screen_index;
 
+use std::collections::HashMap;
+
 use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
 
@@ -158,6 +160,51 @@ impl WindowServer {
     /// The Space `wid` lives on. 0x7 asks across current, other, and
     /// minimized-window Spaces. Per-window by necessity: the batched form of
     /// the call returns the distinct Spaces of the set, not one per window.
+    /// Window id → Space id for every Space in `space_ids`.
+    ///
+    /// `SLSCopySpacesForWindows` answers with the *distinct* Spaces of the set
+    /// rather than one per window, so it cannot be batched. Asking each Space
+    /// which windows it holds inverts the problem: one round trip per Space
+    /// instead of one per window, which is what the summon path can afford.
+    pub fn windows_by_space(&self, space_ids: &[u64]) -> HashMap<u32, u64> {
+        let mut out = HashMap::new();
+        for &space in space_ids {
+            for wid in self.window_ids_on(space) {
+                out.entry(wid).or_insert(space);
+            }
+        }
+        out
+    }
+
+    fn window_ids_on(&self, space: u64) -> Vec<u32> {
+        let ids = [CFNumber::new_i64(space.cast_signed())];
+        let spaces = CFArray::from_retained_objects(&ids);
+        let mut set_tags = 0_u64;
+        let mut clear_tags = 0_u64;
+        let raw = unsafe {
+            self.sl.SLSCopyWindowsWithOptionsAndTags.unwrap()(
+                self.cid,
+                0,
+                raw_ptr(&spaces),
+                0x7,
+                &raw mut set_tags,
+                &raw mut clear_tags,
+            )
+        };
+        let Some(list) = (unsafe { retained::<CFArray>(raw) }) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(usize::try_from(list.count()).unwrap_or(0));
+        for i in 0..list.count() {
+            if let Some(n) = unsafe { element::<CFNumber>(&list, i) }
+                && let Some(v) = n.as_i64()
+            {
+                out.push(u32::try_from(v).unwrap_or(0));
+            }
+        }
+        out
+    }
+
     pub fn window_space(&self, wid: u32) -> Option<u64> {
         let ids = [CFNumber::new_i32(wid.cast_signed())];
         let list = CFArray::from_retained_objects(&ids);
