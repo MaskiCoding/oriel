@@ -126,6 +126,7 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
         aspect: c.aspect,
         preview,
         badge: c.badge.clone(),
+        ..ui::Tile::default()
     }
 }
 

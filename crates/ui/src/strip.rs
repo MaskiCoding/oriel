@@ -4,13 +4,15 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, class, msg_send};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
-    NSRunningApplication, NSScreen, NSTextField, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSImageView, NSPanel, NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen, NSTextField,
+    NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
-use objc2_foundation::{NSPoint, NSPointInRect, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSMutableAttributedString, NSPoint, NSPointInRect, NSRange, NSRect, NSSize, NSString,
+};
 use objc2_quartz_core::kCAGravityResizeAspect;
 
 use crate::look::{Look, ShowOn, Size, Style, Theme};
@@ -28,6 +30,49 @@ pub struct Tile {
     /// State markers (minimized ●, fullscreen ⤢, Desktop number), already
     /// composed; empty shows no chip.
     pub badge: String,
+    /// Byte ranges `(start, len)` in `title` to highlight, from the model's matcher.
+    /// Empty = no highlight.
+    pub title_spans: Vec<(usize, usize)>,
+    /// Byte ranges `(start, len)` in `app` to highlight.
+    pub app_spans: Vec<(usize, usize)>,
+}
+
+impl Default for Tile {
+    fn default() -> Self {
+        Self {
+            app: String::new(),
+            title: String::new(),
+            pid: 0,
+            aspect: 1.6,
+            preview: None,
+            badge: String::new(),
+            title_spans: Vec::new(),
+            app_spans: Vec::new(),
+        }
+    }
+}
+
+impl Tile {
+    /// Builds a tile with no match highlighting.
+    pub fn new(
+        app: String,
+        title: String,
+        pid: i32,
+        aspect: f64,
+        preview: Option<CFRetained<CGImage>>,
+        badge: String,
+    ) -> Self {
+        Self {
+            app,
+            title,
+            pid,
+            aspect,
+            preview,
+            badge,
+            title_spans: Vec::new(),
+            app_spans: Vec::new(),
+        }
+    }
 }
 
 /// Inner margin between a tile's edge and its contents.
@@ -47,6 +92,11 @@ const ICON: f64 = 64.0;
 /// How full a row aims to be, as a share of the hard width limit — the strip
 /// prefers growing down over stretching one row across the screen.
 const ROW_FILL: f64 = 0.8;
+/// Filter query row height at Medium scale (plus a gap before the tiles).
+const QUERY_H: f64 = 26.0;
+const QUERY_PROMPT: &str = "Filter";
+/// Drawn caret width inside the query row.
+const CARET_W: f64 = 1.5;
 
 /// Fixed scales for the discrete size settings; `Auto` picks in between.
 const SCALE_SMALL: f64 = 0.7;
@@ -72,6 +122,8 @@ struct Metrics {
     title_font: f64,
     badge_font: f64,
     caption_icon: f64,
+    query_h: f64,
+    query_font: f64,
 }
 
 impl Metrics {
@@ -89,6 +141,8 @@ impl Metrics {
             title_font: (12.0 * s).clamp(10.0, 14.0),
             badge_font: (11.0 * s).clamp(9.0, 13.0),
             caption_icon: (16.0 * s).clamp(12.0, 20.0),
+            query_h: (QUERY_H * s).clamp(20.0, 34.0),
+            query_font: (13.0 * s).clamp(11.0, 16.0),
         }
     }
 
@@ -106,6 +160,11 @@ impl Metrics {
 
     fn list_width(&self) -> f64 {
         (280.0 * self.preview_h / PREVIEW_H).clamp(160.0, 400.0)
+    }
+
+    /// Extra panel height when the filter query row is visible (row + gap).
+    fn query_space(&self) -> f64 {
+        self.query_h + self.gap
     }
 }
 
@@ -156,7 +215,7 @@ fn panel_fits(tiles: usize, screen_w: f64, screen_h: f64, scale: f64) -> bool {
     let tw = gallery_tile_width(1.5, &m);
     let widths = vec![tw; tiles];
     let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
-    let plan = layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad);
+    let plan = layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad, 0.0);
     plan.width <= screen_w && plan.height <= screen_h
 }
 
@@ -177,15 +236,27 @@ struct Layout {
 
 #[cfg(test)]
 fn layout(widths: &[f64], max_content: f64) -> Layout {
-    layout_sized(widths, max_content, TILE_H, GAP, PAD)
+    layout_sized(widths, max_content, TILE_H, GAP, PAD, 0.0)
 }
 
-fn layout_sized(widths: &[f64], max_content: f64, tile_h: f64, gap: f64, pad: f64) -> Layout {
+#[cfg(test)]
+fn layout_with_query(widths: &[f64], max_content: f64, query_space: f64) -> Layout {
+    layout_sized(widths, max_content, TILE_H, GAP, PAD, query_space)
+}
+
+fn layout_sized(
+    widths: &[f64],
+    max_content: f64,
+    tile_h: f64,
+    gap: f64,
+    pad: f64,
+    query_space: f64,
+) -> Layout {
     if widths.is_empty() {
         return Layout {
             origins: Vec::new(),
             width: 2.0 * pad,
-            height: 2.0 * pad,
+            height: 2.0 * pad + query_space,
         };
     }
     let total = widths.iter().sum::<f64>() + gap * as_f64(widths.len().saturating_sub(1));
@@ -218,11 +289,11 @@ fn layout_sized(widths: &[f64], max_content: f64, tile_h: f64, gap: f64, pad: f6
     let content_w = rows.iter().map(|r| r.1).fold(0.0, f64::max);
     let count = as_f64(rows.len());
     let width = content_w + 2.0 * pad;
-    let height = count.mul_add(tile_h, (count - 1.0).max(0.0) * gap) + 2.0 * pad;
+    let height = count.mul_add(tile_h, (count - 1.0).max(0.0) * gap) + 2.0 * pad + query_space;
     let mut origins = vec![(0.0, 0.0); widths.len()];
     for (r, (indices, w)) in rows.iter().enumerate() {
         let mut x = pad + (content_w - w) / 2.0;
-        let y = height - pad - as_f64(r + 1) * tile_h - as_f64(r) * gap;
+        let y = height - pad - query_space - as_f64(r + 1) * tile_h - as_f64(r) * gap;
         for &i in indices {
             origins[i] = (x, y);
             x += widths[i] + gap;
@@ -235,7 +306,7 @@ fn layout_sized(widths: &[f64], max_content: f64, tile_h: f64, gap: f64, pad: f6
     }
 }
 
-fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64) -> Layout {
+fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64, query_space: f64) -> Layout {
     match style {
         Style::Gallery => {
             let widths: Vec<f64> = tiles
@@ -243,29 +314,43 @@ fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64) -> Layout {
                 .map(|t| gallery_tile_width(t.aspect, m))
                 .collect();
             let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
-            layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad)
+            layout_sized(
+                &widths,
+                max_content,
+                m.gallery_tile_h(),
+                m.gap,
+                m.pad,
+                query_space,
+            )
         }
         Style::Icons => {
             let side = m.icons_side();
             let widths = vec![side; tiles.len()];
             let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(side);
-            layout_sized(&widths, max_content, side, m.gap, m.pad)
+            layout_sized(&widths, max_content, side, m.gap, m.pad, query_space)
         }
-        Style::List => list_layout(tiles.len(), m.list_width(), m.list_row_h(), m.gap, m.pad),
+        Style::List => list_layout(
+            tiles.len(),
+            m.list_width(),
+            m.list_row_h(),
+            m.gap,
+            m.pad,
+            query_space,
+        ),
     }
 }
 
-fn list_layout(n: usize, row_w: f64, row_h: f64, gap: f64, pad: f64) -> Layout {
+fn list_layout(n: usize, row_w: f64, row_h: f64, gap: f64, pad: f64, query_space: f64) -> Layout {
     let count = as_f64(n);
     let width = row_w + 2.0 * pad;
     let height = if n == 0 {
-        2.0 * pad
+        2.0 * pad + query_space
     } else {
-        count.mul_add(row_h, (count - 1.0) * gap) + 2.0 * pad
+        count.mul_add(row_h, (count - 1.0) * gap) + 2.0 * pad + query_space
     };
     let mut origins = Vec::with_capacity(n);
     for i in 0..n {
-        let y = height - pad - as_f64(i + 1) * row_h - as_f64(i) * gap;
+        let y = height - pad - query_space - as_f64(i + 1) * row_h - as_f64(i) * gap;
         origins.push((pad, y));
     }
     Layout {
@@ -318,6 +403,54 @@ fn theme_is_dark(theme: Theme) -> bool {
     }
 }
 
+/// Convert a UTF-8 byte span `(start, len)` into an `AppKit` UTF-16 `NSRange`.
+/// Returns `None` for empty, out-of-bounds, or non-char-boundary spans.
+fn utf8_span_to_utf16_range(text: &str, start: usize, len: usize) -> Option<NSRange> {
+    let end = start.checked_add(len)?;
+    if len == 0 || end > text.len() {
+        return None;
+    }
+    if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+        return None;
+    }
+    let utf16_start = text[..start].encode_utf16().count();
+    let utf16_len = text[start..end].encode_utf16().count();
+    Some(NSRange::new(utf16_start, utf16_len))
+}
+
+fn attributed_label(
+    text: &str,
+    spans: &[(usize, usize)],
+    font_size: f64,
+    base_color: &NSColor,
+    mtm: MainThreadMarker,
+) -> Retained<NSTextField> {
+    let ns = NSString::from_str(text);
+    let attr = NSMutableAttributedString::from_nsstring(&ns);
+    let full = NSRange::new(0, ns.length());
+    let font = NSFont::systemFontOfSize(font_size);
+    // SAFETY: font/color are valid attribute values for the given keys.
+    unsafe {
+        attr.addAttribute_value_range(NSFontAttributeName, &font, full);
+        attr.addAttribute_value_range(NSForegroundColorAttributeName, base_color, full);
+    }
+    if !spans.is_empty() {
+        let accent = NSColor::controlAccentColor();
+        for &(start, len) in spans {
+            let Some(range) = utf8_span_to_utf16_range(text, start, len) else {
+                continue;
+            };
+            // SAFETY: accent is a valid foreground colour attribute value.
+            unsafe {
+                attr.addAttribute_value_range(NSForegroundColorAttributeName, &accent, range);
+            }
+        }
+    }
+    let label = NSTextField::labelWithAttributedString(&attr, mtm);
+    label.setMaximumNumberOfLines(1);
+    label
+}
+
 /// The resident overlay panel. Created once and kept alive: `show` builds the
 /// tile grid and orders it front, `select` moves the highlight without
 /// rebuilding, `hide` orders it out.
@@ -331,6 +464,12 @@ pub struct Strip {
     dark: Cell<bool>,
     /// Scale last applied by `show`, so `update_tile` rebuilds at the same size.
     scale: Cell<f64>,
+    /// `None` hides the query row; `Some` shows it with that text (may be empty).
+    query: RefCell<Option<String>>,
+    query_label: RefCell<Option<Retained<NSTextField>>>,
+    query_caret: RefCell<Option<Retained<NSView>>>,
+    /// Extra height currently reserved for the query row (0 when hidden).
+    query_space: Cell<f64>,
 }
 
 impl Strip {
@@ -370,12 +509,42 @@ impl Strip {
             look: Cell::new(Look::default()),
             dark: Cell::new(true),
             scale: Cell::new(SCALE_MEDIUM),
+            query: RefCell::new(None),
+            query_label: RefCell::new(None),
+            query_caret: RefCell::new(None),
+            query_space: Cell::new(0.0),
         }
     }
 
     /// Sets the presentation used by the next `show`.
     pub fn set_look(&self, look: Look) {
         self.look.set(look);
+    }
+
+    /// Shows the query row with `query` as its contents. `None` hides the row.
+    pub fn set_query(&self, query: Option<&str>) {
+        let was = self.query_space.get();
+        {
+            let mut slot = self.query.borrow_mut();
+            *slot = query.map(str::to_owned);
+        }
+        let m = Metrics::at(self.scale.get());
+        let now = if query.is_some() {
+            m.query_space()
+        } else {
+            0.0
+        };
+        let delta = now - was;
+        if delta.abs() > f64::EPSILON {
+            let size = self.content.frame().size;
+            self.panel
+                .setContentSize(NSSize::new(size.width, size.height + delta));
+            let origin = self.panel.frame().origin;
+            self.panel
+                .setFrameOrigin(NSPoint::new(origin.x, origin.y - delta / 2.0));
+            self.query_space.set(now);
+        }
+        self.sync_query_row();
     }
 
     /// Builds the tiles in centered wrapping rows that always fit the screen,
@@ -403,7 +572,13 @@ impl Strip {
         self.dark.set(dark);
         self.apply_theme(dark);
 
-        let plan = plan(tiles, look.style, &m, screen_w);
+        let query_space = if self.query.borrow().is_some() {
+            m.query_space()
+        } else {
+            0.0
+        };
+        self.query_space.set(query_space);
+        let plan = plan(tiles, look.style, &m, screen_w, query_space);
         self.panel
             .setContentSize(NSSize::new(plan.width, plan.height));
 
@@ -418,6 +593,7 @@ impl Strip {
         self.tiles.replace(views);
         self.selected.set(usize::MAX);
         self.select(selected);
+        self.sync_query_row();
 
         // AppKit's center() floats windows above the visual middle; the strip
         // sits at the true center of the visible screen instead.
@@ -628,15 +804,13 @@ impl Strip {
             text_end -= w + 6.0;
         }
 
-        let text = if tile.title.is_empty() {
-            &tile.app
+        let (text, spans) = if tile.title.is_empty() {
+            (tile.app.as_str(), tile.app_spans.as_slice())
         } else {
-            &tile.title
+            (tile.title.as_str(), tile.title_spans.as_slice())
         };
-        let label = NSTextField::labelWithString(&NSString::from_str(text), self.mtm);
+        let label = attributed_label(text, spans, m.title_font, &title_color, self.mtm);
         label.setMaximumNumberOfLines(1);
-        label.setFont(Some(&NSFont::systemFontOfSize(m.title_font)));
-        label.setTextColor(Some(&title_color));
         let label_h = m.title_font + 5.0;
         let label_y = base + (band_h - label_h).max(0.0) / 2.0;
         label.setFrame(NSRect::new(
@@ -644,6 +818,104 @@ impl Strip {
             NSSize::new((text_end - text_x).max(10.0), label_h),
         ));
         view.addSubview(&label);
+    }
+
+    fn sync_query_row(&self) {
+        let m = Metrics::at(self.scale.get());
+        let dark = self.dark.get();
+        let query = self.query.borrow().clone();
+        let Some(text) = query else {
+            if let Some(label) = self.query_label.borrow_mut().take() {
+                label.removeFromSuperview();
+            }
+            if let Some(caret) = self.query_caret.borrow_mut().take() {
+                caret.removeFromSuperview();
+            }
+            return;
+        };
+
+        let panel_w = self.content.frame().size.width;
+        let panel_h = self.content.frame().size.height;
+        let row_y = panel_h - m.pad - m.query_h;
+        let content_w = (panel_w - 2.0 * m.pad).max(10.0);
+
+        let prompt = text.is_empty();
+        let display = if prompt { QUERY_PROMPT } else { text.as_str() };
+        let color = if prompt {
+            if dark {
+                NSColor::colorWithWhite_alpha(1.0, 0.35)
+            } else {
+                NSColor::colorWithWhite_alpha(0.0, 0.35)
+            }
+        } else if dark {
+            NSColor::colorWithWhite_alpha(1.0, 0.92)
+        } else {
+            NSColor::colorWithWhite_alpha(0.08, 0.92)
+        };
+
+        let label = {
+            let mut slot = self.query_label.borrow_mut();
+            if let Some(existing) = slot.as_ref() {
+                existing.clone()
+            } else {
+                let created = NSTextField::labelWithString(&NSString::from_str(display), self.mtm);
+                self.content.addSubview(&created);
+                *slot = Some(created.clone());
+                created
+            }
+        };
+        label.setStringValue(&NSString::from_str(display));
+        label.setFont(Some(&NSFont::systemFontOfSize(m.query_font)));
+        label.setTextColor(Some(&color));
+        label.setMaximumNumberOfLines(1);
+        label.sizeToFit();
+        let text_h = m.query_font + 5.0;
+        let text_y = row_y + (m.query_h - text_h).max(0.0) / 2.0;
+        let caret_h = (m.query_font + 2.0).min(m.query_h - 4.0);
+        let caret_y = row_y + (m.query_h - caret_h).max(0.0) / 2.0;
+        let text_w = if prompt {
+            0.0
+        } else {
+            label.frame().size.width.min(content_w - CARET_W - 4.0)
+        };
+        let caret_x = m.pad + text_w + if prompt { 0.0 } else { 1.0 };
+        let label_x = if prompt {
+            caret_x + CARET_W + 3.0
+        } else {
+            m.pad
+        };
+        let label_w = if prompt {
+            (content_w - (label_x - m.pad)).max(10.0)
+        } else {
+            text_w.max(10.0)
+        };
+        label.setFrame(NSRect::new(
+            NSPoint::new(label_x, text_y),
+            NSSize::new(label_w, text_h),
+        ));
+
+        let caret = {
+            let mut slot = self.query_caret.borrow_mut();
+            if let Some(existing) = slot.as_ref() {
+                existing.clone()
+            } else {
+                let created = NSView::initWithFrame(
+                    self.mtm.alloc(),
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CARET_W, caret_h)),
+                );
+                created.setWantsLayer(true);
+                self.content.addSubview(&created);
+                *slot = Some(created.clone());
+                created
+            }
+        };
+        if let Some(layer) = caret.layer() {
+            layer.setBackgroundColor(Some(&NSColor::controlAccentColor().CGColor()));
+        }
+        caret.setFrame(NSRect::new(
+            NSPoint::new(caret_x, caret_y),
+            NSSize::new(CARET_W, caret_h),
+        ));
     }
 
     fn surface_frame(width: f64, m: &Metrics) -> NSRect {
@@ -793,12 +1065,56 @@ mod tests {
 
     #[test]
     fn list_layout_is_a_single_column() {
-        let plan = list_layout(3, 280.0, 30.0, 4.0, 12.0);
+        let plan = list_layout(3, 280.0, 30.0, 4.0, 12.0, 0.0);
         assert_eq!(plan.width, 280.0 + 24.0);
         assert_eq!(plan.origins.len(), 3);
         assert_eq!(plan.origins[0].0, plan.origins[1].0);
         assert_eq!(plan.origins[1].0, plan.origins[2].0);
         assert!(plan.origins[0].1 > plan.origins[1].1);
         assert!(plan.origins[1].1 > plan.origins[2].1);
+    }
+
+    #[test]
+    fn query_row_grows_panel_height() {
+        let plain = layout(&[100.0], 1000.0);
+        let with_q = layout_with_query(&[100.0], 1000.0, QUERY_H + GAP);
+        assert_eq!(plain.width, with_q.width);
+        assert_eq!(with_q.height, plain.height + QUERY_H + GAP);
+        // Tiles stay bottom-anchored; the extra space is above them.
+        assert_eq!(plain.origins[0].1, with_q.origins[0].1);
+    }
+
+    #[test]
+    fn query_row_absent_keeps_legacy_height() {
+        let plan = layout(&[100.0, 100.0], 1000.0);
+        assert_eq!(plan.height, TILE_H + 2.0 * PAD);
+        let empty = layout(&[], 1000.0);
+        assert_eq!(empty.height, 2.0 * PAD);
+        let empty_q = layout_with_query(&[], 1000.0, QUERY_H + GAP);
+        assert_eq!(empty_q.height, 2.0 * PAD + QUERY_H + GAP);
+    }
+
+    #[test]
+    fn utf8_span_converts_to_utf16_range() {
+        // "Café" — é is one Unicode scalar, two UTF-8 bytes, one UTF-16 unit.
+        let s = "Café";
+        let range = utf8_span_to_utf16_range(s, 0, s.len()).unwrap();
+        assert_eq!(range, NSRange::new(0, 4));
+        let e_acute = utf8_span_to_utf16_range(s, 3, 2).unwrap();
+        assert_eq!(e_acute, NSRange::new(3, 1));
+        // Non-BMP: "𝄞" is U+1D11E — 4 UTF-8 bytes, 2 UTF-16 units (surrogate pair).
+        let clef = "x𝄞y";
+        let span = utf8_span_to_utf16_range(clef, 1, 4).unwrap();
+        assert_eq!(span, NSRange::new(1, 2));
+    }
+
+    #[test]
+    fn utf8_span_skips_invalid() {
+        let s = "Café";
+        assert!(utf8_span_to_utf16_range(s, 0, 0).is_none());
+        assert!(utf8_span_to_utf16_range(s, 10, 1).is_none());
+        assert!(utf8_span_to_utf16_range(s, 3, 5).is_none());
+        // Mid-code-unit (inside é's UTF-8 sequence).
+        assert!(utf8_span_to_utf16_range(s, 4, 1).is_none());
     }
 }
