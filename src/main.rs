@@ -274,6 +274,7 @@ fn strip_demo() {
                 badge: model::SpaceMap::new([]).badge(state.minimized, None),
                 app: w.app.unwrap_or_default(),
                 title: w.title.unwrap_or_default(),
+                ..ui::Tile::default()
             }
         })
         .collect();
