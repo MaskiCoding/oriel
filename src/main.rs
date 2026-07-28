@@ -1,4 +1,5 @@
 mod app;
+mod snapshot;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -50,6 +51,11 @@ fn main() {
         #[cfg(debug_assertions)]
         Some("--window-bits") => {
             window_bits();
+            return;
+        }
+        #[cfg(debug_assertions)]
+        Some("--snapshot") => {
+            dump_snapshot();
             return;
         }
         #[cfg(debug_assertions)]
@@ -153,6 +159,51 @@ fn window_bits() {
             w.app.unwrap_or_default()
         );
     }
+}
+
+/// Builds a full lens-resolver snapshot and prints one line per window.
+#[cfg(debug_assertions)]
+fn dump_snapshot() {
+    let ws = winsrv::WindowServer::connect().expect("windowserver");
+    let mut mru = model::Mru::default();
+    let snap = snapshot::snapshot(&ws, &mut mru);
+    let mut real = 0_usize;
+    let mut windowless = 0_usize;
+    for w in &snap.windows {
+        if w.windowless {
+            windowless += 1;
+        } else {
+            real += 1;
+        }
+        let flags = [
+            ("visible", w.space_visible),
+            ("fullscreen", w.fullscreen),
+            ("minimized", w.state.minimized),
+            ("hidden", w.state.hidden),
+            ("main", w.is_main),
+            ("windowless", w.windowless),
+        ]
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect::<Vec<_>>()
+        .join(",");
+        let meta = snap.meta.get(&w.id);
+        let pid = meta.map_or(w.app, |m| m.pid);
+        let aspect = meta.map_or(0.0, |m| m.aspect);
+        let badge = meta.map_or("", |m| m.badge.as_str());
+        println!(
+            "id={} pid={pid} app={} screen={} space={} ordinal={} aspect={aspect:.2} flags={} badge={} title={}",
+            w.id.0,
+            w.app_name,
+            w.screen,
+            w.space.map_or_else(|| "-".into(), |s| s.to_string()),
+            w.space_ordinal,
+            if flags.is_empty() { "-" } else { &flags },
+            if badge.is_empty() { "-" } else { badge },
+            w.title,
+        );
+    }
+    println!("real={real} windowless={windowless}");
 }
 
 #[cfg(debug_assertions)]
