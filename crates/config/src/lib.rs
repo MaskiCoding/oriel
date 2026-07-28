@@ -7,6 +7,7 @@ pub use error::ConfigError;
 pub use types::{
     Apps, Controls, CursorFollowsFocus, Disposition, HideWindows, Keys, OnRelease, Order,
     PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme,
+    to_model_rules,
 };
 
 use std::path::Path;
@@ -390,5 +391,118 @@ trigger = ""
     fn default_lens_one_matches_model_default() {
         let lens = lens_field_defaults().to_model_lens();
         assert_eq!(lens, model::Lens::default());
+    }
+
+    #[test]
+    fn parse_title_contains_with_substrings() {
+        let cfg = parse(
+            r#"
+[[rule]]
+bundle_prefix = "com.notes."
+hide_windows = "title-contains"
+hide_title_substrings = ["secret", "draft"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        assert_eq!(cfg.rules[0].hide_windows, Some(HideWindows::TitleContains));
+        assert_eq!(
+            cfg.rules[0].hide_title_substrings,
+            vec!["secret".to_string(), "draft".to_string()]
+        );
+    }
+
+    #[test]
+    fn to_model_rule_maps_every_variant() {
+        let never = Rule {
+            bundle_prefix: "com.a.".into(),
+            pass_triggers: Some(PassTriggers::Never),
+            hide_windows: Some(HideWindows::Never),
+            hide_title_substrings: Vec::new(),
+        };
+        assert_eq!(
+            never.to_model_rule(),
+            model::Rule {
+                bundle_prefix: "com.a.".into(),
+                hide: model::HideWindows::Never,
+                pass: model::PassTriggers::Never,
+            }
+        );
+
+        let always = Rule {
+            bundle_prefix: "com.b.".into(),
+            pass_triggers: Some(PassTriggers::Always),
+            hide_windows: Some(HideWindows::Always),
+            hide_title_substrings: Vec::new(),
+        };
+        assert_eq!(
+            always.to_model_rule(),
+            model::Rule {
+                bundle_prefix: "com.b.".into(),
+                hide: model::HideWindows::Always,
+                pass: model::PassTriggers::Always,
+            }
+        );
+
+        let windowless = Rule {
+            bundle_prefix: "com.c.".into(),
+            pass_triggers: Some(PassTriggers::Fullscreen),
+            hide_windows: Some(HideWindows::Windowless),
+            hide_title_substrings: Vec::new(),
+        };
+        assert_eq!(
+            windowless.to_model_rule(),
+            model::Rule {
+                bundle_prefix: "com.c.".into(),
+                hide: model::HideWindows::Windowless,
+                pass: model::PassTriggers::Fullscreen,
+            }
+        );
+
+        let title = Rule {
+            bundle_prefix: "com.d.".into(),
+            pass_triggers: Some(PassTriggers::Never),
+            hide_windows: Some(HideWindows::TitleContains),
+            hide_title_substrings: vec!["secret".into(), "draft".into()],
+        };
+        assert_eq!(
+            title.to_model_rule(),
+            model::Rule {
+                bundle_prefix: "com.d.".into(),
+                hide: model::HideWindows::TitleContains(vec!["secret".into(), "draft".into()]),
+                pass: model::PassTriggers::Never,
+            }
+        );
+    }
+
+    #[test]
+    fn to_model_rule_none_defaults_to_never() {
+        let rule = Rule {
+            bundle_prefix: "com.app.".into(),
+            pass_triggers: None,
+            hide_windows: None,
+            hide_title_substrings: Vec::new(),
+        };
+        assert_eq!(
+            rule.to_model_rule(),
+            model::Rule {
+                bundle_prefix: "com.app.".into(),
+                hide: model::HideWindows::Never,
+                pass: model::PassTriggers::Never,
+            }
+        );
+    }
+
+    #[test]
+    fn to_model_rules_builds_model_rules() {
+        let rules = vec![Rule {
+            bundle_prefix: "com.app.".into(),
+            pass_triggers: Some(PassTriggers::Always),
+            hide_windows: Some(HideWindows::Always),
+            hide_title_substrings: Vec::new(),
+        }];
+        let model_rules = to_model_rules(&rules);
+        assert!(model_rules.should_hide("com.app.foo", "", true));
+        assert!(model_rules.passes_trigger("com.app.foo", false));
     }
 }
