@@ -13,6 +13,9 @@ menubar_icon = true
 [peek]
 enabled = false
 
+[animation]
+fade_out = false
+
 [titles]
 show = "title"
 truncate = "end"

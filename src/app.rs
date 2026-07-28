@@ -1209,6 +1209,13 @@ impl App {
     }
 
     fn show_settings(&mut self) {
+        // The window holds its own copy of the config; hand it the current one
+        // before showing, or an edit would save a snapshot from last time over
+        // whatever has changed on disk since.
+        self.strip.set_fade_out(self.config.animation.fade_out);
+        if let Some(settings) = &self.settings {
+            settings.set_config(&self.config);
+        }
         if self.settings.is_none() {
             let path = self.config_path.clone();
             let settings = ui::Settings::new(self.mtm, &self.config, move |edited| {
@@ -1307,6 +1314,9 @@ impl App {
         self.controls = cfg.controls.clone();
         if hover_changed {
             self.strip.set_hover_select(self.controls.hover_select);
+        }
+        if let Some(settings) = &self.settings {
+            settings.set_config(&self.config);
         }
         self.rules = config::to_model_rules(&cfg.rules);
         self.config = cfg;
@@ -1517,6 +1527,7 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
     spawn_capture(&app);
     spawn_peek_capture(&app);
     install_mouse(&app);
+    app.borrow().strip.set_fade_out(cfg.animation.fade_out);
 
     if !boot_triggers(&app, cfg.menubar_icon) {
         return;

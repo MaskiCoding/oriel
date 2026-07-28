@@ -217,6 +217,37 @@ impl SettingsController {
         self.ivars().suppress.set(false);
     }
 
+    /// Pushes `config` back into every control. Without this the window keeps
+    /// the snapshot it was built from, and the next edit would save that stale
+    /// copy over whatever changed on disk in the meantime.
+    fn load_globals(&self) {
+        let Some(w) = self.ivars().widgets.get() else {
+            return;
+        };
+        self.ivars().suppress.set(true);
+        {
+            let cfg = self.ivars().config.borrow();
+            w.summon_slider
+                .setDoubleValue(f64::from(cfg.summon_delay_ms));
+            w.summon_value
+                .setStringValue(&NSString::from_str(&format!("{} ms", cfg.summon_delay_ms)));
+            select_title(&w.theme, theme_title(cfg.theme));
+            select_title(&w.show_on, show_on_title(cfg.show_on));
+            set_checkbox(&w.background_capture, cfg.background_capture);
+            set_checkbox(&w.start_at_login, cfg.start_at_login);
+            set_checkbox(&w.menubar_icon, cfg.menubar_icon);
+            set_checkbox(&w.peek_enabled, cfg.peek.enabled);
+            set_checkbox(&w.arrow_keys, cfg.controls.arrow_keys);
+            set_checkbox(&w.vim_keys, cfg.controls.vim_keys);
+            set_checkbox(&w.hover_select, cfg.controls.hover_select);
+            select_title(
+                &w.cursor_follows,
+                cursor_title(cfg.controls.cursor_follows_focus),
+            );
+        }
+        self.ivars().suppress.set(false);
+    }
+
     fn rebuild_lens_picker(&self) {
         let Some(w) = self.ivars().widgets.get() else {
             return;
@@ -244,7 +275,7 @@ impl SettingsController {
 /// Native settings window: a view over the TOML config. Persistence is the caller's job.
 pub struct Settings {
     window: Retained<NSWindow>,
-    _controller: Retained<SettingsController>,
+    controller: Retained<SettingsController>,
 }
 
 impl Settings {
@@ -264,10 +295,15 @@ impl Settings {
             .set(widgets)
             .unwrap_or_else(|_| panic!("settings widgets set once"));
         controller.rebuild_lens_picker();
-        Self {
-            window,
-            _controller: controller,
-        }
+        Self { window, controller }
+    }
+
+    /// Re-seeds the window from `config`. The caller owns the file, so the
+    /// window must be told when it changed underneath it.
+    pub fn set_config(&self, config: &Config) {
+        *self.controller.ivars().config.borrow_mut() = config.clone();
+        self.controller.load_globals();
+        self.controller.rebuild_lens_picker();
     }
 
     pub fn show(&self) {
@@ -759,6 +795,14 @@ fn slider_ms(slider: &NSSlider) -> u32 {
 
 fn checkbox_on(button: &NSButton) -> bool {
     button.state() == NSControlStateValueOn
+}
+
+fn set_checkbox(button: &NSButton, on: bool) {
+    button.setState(if on {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    });
 }
 
 fn select_title(popup: &NSPopUpButton, title: &str) {

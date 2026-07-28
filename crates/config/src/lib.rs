@@ -6,9 +6,9 @@ mod write;
 
 pub use error::ConfigError;
 pub use types::{
-    Apps, Controls, CursorFollowsFocus, Disposition, HideWindows, Keys, OnRelease, Order,
-    PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme, TitleShow,
-    TitleTruncate, Titles, to_model_rules,
+    Animation, Apps, Controls, CursorFollowsFocus, Disposition, HideWindows, Keys, OnRelease,
+    Order, PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme,
+    TitleShow, TitleTruncate, Titles, to_model_rules,
 };
 pub use write::{save, to_toml};
 
@@ -26,6 +26,7 @@ pub struct Config {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub animation: Animation,
     pub titles: Titles,
     pub controls: Controls,
     pub keys: Keys,
@@ -43,6 +44,7 @@ impl Default for Config {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            animation: Animation::default(),
             titles: Titles::default(),
             controls: Controls::default(),
             keys: Keys::default(),
@@ -64,6 +66,7 @@ pub fn parse(toml: &str) -> Result<Config, ConfigError> {
         start_at_login: raw.start_at_login,
         menubar_icon: raw.menubar_icon,
         peek: raw.peek,
+        animation: raw.animation,
         titles: raw.titles,
         controls: raw.controls,
         keys: raw.keys,

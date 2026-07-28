@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::Config;
 use crate::error::ConfigError;
-use crate::types::{Controls, Keys, Peek, ResolvedLens, Rule, ShowOn, Theme, Titles};
+use crate::types::{Animation, Controls, Keys, Peek, ResolvedLens, Rule, ShowOn, Theme, Titles};
 
 #[derive(Serialize)]
 struct OutConfig<'a> {
@@ -15,6 +15,7 @@ struct OutConfig<'a> {
     start_at_login: bool,
     menubar_icon: bool,
     peek: &'a Peek,
+    animation: &'a Animation,
     titles: &'a Titles,
     controls: &'a Controls,
     keys: &'a Keys,
@@ -34,6 +35,7 @@ pub fn to_toml(config: &Config) -> String {
         start_at_login: config.start_at_login,
         menubar_icon: config.menubar_icon,
         peek: &config.peek,
+        animation: &config.animation,
         titles: &config.titles,
         controls: &config.controls,
         keys: &config.keys,
@@ -117,6 +119,7 @@ mod tests {
             start_at_login: false,
             menubar_icon: false,
             peek: Peek { enabled: true },
+            animation: Animation { fade_out: true },
             titles: Titles {
                 show: TitleShow::Both,
                 truncate: TitleTruncate::Middle,
@@ -226,6 +229,7 @@ mod tests {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek { enabled: false },
+            animation: Animation { fade_out: true },
             titles: Titles::default(),
             controls: Controls {
                 arrow_keys: true,
