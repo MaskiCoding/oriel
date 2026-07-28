@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -35,18 +35,23 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-ax = { version = "0.1.0", path = "crates/ax" }
+ax = { path = "crates/ax" }
 block2 = "0.6"
-capture = { version = "0.1.0", path = "crates/capture" }
+capture = { path = "crates/capture" }
+config = { path = "crates/config" }
 dispatch2 = "0.3.1"
-input = { version = "0.1.0", path = "crates/input" }
-model = { version = "0.1.0", path = "crates/model" }
+input = { path = "crates/input" }
+model = { path = "crates/model" }
+muda = { version = "0.19", default-features = false }
+notify = "8"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSWindow", "NSWorkspace", "libc"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace", "libc"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSNotification", "NSString"] }
-ui = { version = "0.1.0", path = "crates/ui" }
+objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSData", "NSDictionary", "NSError", "NSNotification", "NSString"] }
+png = "0.18"
+tray-icon = { version = "0.24", default-features = false }
+ui = { path = "crates/ui" }
 winsrv = { path = "crates/winsrv" }
 
 [dev-dependencies]

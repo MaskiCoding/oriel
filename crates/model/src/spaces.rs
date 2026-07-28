@@ -121,5 +121,80 @@ mod tests {
         }]);
         assert!(single.uniform());
         assert!(SpaceMap::new([]).uniform());
+
+        // Both conjuncts matter, so exercise each failing on its own.
+        let not_current = SpaceMap::new([
+            SpaceDesc {
+                id: 1,
+                current: true,
+                fullscreen: false,
+            },
+            SpaceDesc {
+                id: 2,
+                current: false,
+                fullscreen: false,
+            },
+        ]);
+        assert!(!not_current.uniform(), "a non-current Space is not uniform");
+
+        let has_fullscreen = SpaceMap::new([
+            SpaceDesc {
+                id: 1,
+                current: true,
+                fullscreen: false,
+            },
+            SpaceDesc {
+                id: 2,
+                current: true,
+                fullscreen: true,
+            },
+        ]);
+        assert!(
+            !has_fullscreen.uniform(),
+            "a fullscreen Space is not uniform"
+        );
+
+        // Several current desktops (one per display) is still uniform.
+        let two_displays = SpaceMap::new([
+            SpaceDesc {
+                id: 1,
+                current: true,
+                fullscreen: false,
+            },
+            SpaceDesc {
+                id: 2,
+                current: true,
+                fullscreen: false,
+            },
+        ]);
+        assert!(two_displays.uniform());
+    }
+
+    /// Desktop numbering counts user Spaces only — a fullscreen Space sitting
+    /// between two desktops must not consume a number.
+    #[test]
+    fn fullscreen_spaces_do_not_take_a_desktop_number() {
+        let m = SpaceMap::new([
+            SpaceDesc {
+                id: 10,
+                current: true,
+                fullscreen: false,
+            },
+            SpaceDesc {
+                id: 20,
+                current: false,
+                fullscreen: true,
+            },
+            SpaceDesc {
+                id: 30,
+                current: false,
+                fullscreen: false,
+            },
+        ]);
+        // Space 30 is the second *desktop*, not the third Space.
+        assert_eq!(m.badge(false, Some(30)), "2");
+        assert_eq!(m.badge(true, Some(30)), "● 2");
+        // The fullscreen Space shows the fullscreen marker, not a number.
+        assert_eq!(m.badge(false, Some(20)), "⤢");
     }
 }

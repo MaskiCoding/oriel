@@ -26,6 +26,7 @@
 .vscode/
 *.swp
 .claude/settings.local.json
+.claude/worktrees/
 
 # profiling/debug artifacts
 *.trace

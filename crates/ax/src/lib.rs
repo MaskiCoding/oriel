@@ -1,7 +1,13 @@
 //! Safe RAII wrapper over the C Accessibility API.
 
+mod actions;
+mod element;
 mod raise;
 
+pub use actions::{
+    close_window, is_app_hidden, is_fullscreen, is_minimized, set_app_hidden, set_fullscreen,
+    set_minimized,
+};
 pub use raise::{focused_window, raise_window};
 
 use core::ffi::c_void;

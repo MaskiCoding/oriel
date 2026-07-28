@@ -7,6 +7,8 @@ pub enum ConfigError {
     Toml(toml::de::Error),
     Io { path: PathBuf, source: io::Error },
     EmptyTrigger,
+    EmptyBundlePrefix,
+    TitleContainsWithoutSubstrings(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -14,9 +16,18 @@ impl fmt::Display for ConfigError {
         match self {
             Self::Toml(e) => write!(f, "invalid config TOML: {e}"),
             Self::Io { path, source } => {
-                write!(f, "failed to read config {}: {source}", path.display())
+                // `save` reports through this variant too, so do not claim "read".
+                write!(f, "config {}: {source}", path.display())
             }
             Self::EmptyTrigger => write!(f, "lens trigger must not be empty"),
+            Self::EmptyBundlePrefix => write!(
+                f,
+                "rule bundle_prefix must not be empty — an empty prefix matches every app"
+            ),
+            Self::TitleContainsWithoutSubstrings(prefix) => write!(
+                f,
+                "rule {prefix}: hide_windows = \"title-contains\" needs at least one non-empty hide_title_substrings entry"
+            ),
         }
     }
 }
@@ -26,7 +37,9 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Toml(e) => Some(e),
             Self::Io { source, .. } => Some(source),
-            Self::EmptyTrigger => None,
+            Self::EmptyTrigger
+            | Self::EmptyBundlePrefix
+            | Self::TitleContainsWithoutSubstrings(_) => None,
         }
     }
 }

@@ -1,14 +1,16 @@
-//! TOML config: schema, defaults, parse + validate.
+//! TOML config: schema, defaults, parse + validate + write.
 
 mod error;
 mod types;
+mod write;
 
 pub use error::ConfigError;
 pub use types::{
     Apps, Controls, CursorFollowsFocus, Disposition, HideWindows, Keys, OnRelease, Order,
-    PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme,
-    to_model_rules,
+    PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme, TitleShow,
+    TitleTruncate, Titles, to_model_rules,
 };
+pub use write::{save, to_toml};
 
 use std::path::Path;
 
@@ -24,6 +26,7 @@ pub struct Config {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub titles: Titles,
     pub controls: Controls,
     pub keys: Keys,
     pub lenses: Vec<ResolvedLens>,
@@ -40,6 +43,7 @@ impl Default for Config {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            titles: Titles::default(),
             controls: Controls::default(),
             keys: Keys::default(),
             lenses: default_lenses(),
@@ -49,16 +53,18 @@ impl Default for Config {
 }
 
 pub fn parse(toml: &str) -> Result<Config, ConfigError> {
-    let raw: RawConfig = toml::from_str(toml)?;
+    let mut raw: RawConfig = toml::from_str(toml)?;
     let lenses = resolve_lenses(&raw.lenses)?;
+    types::validate_rules(&mut raw.rules)?;
     Ok(Config {
-        summon_delay_ms: raw.summon_delay_ms,
+        summon_delay_ms: raw.summon_delay_ms.min(types::MAX_SUMMON_DELAY_MS),
         theme: raw.theme,
         show_on: raw.show_on,
         background_capture: raw.background_capture,
         start_at_login: raw.start_at_login,
         menubar_icon: raw.menubar_icon,
         peek: raw.peek,
+        titles: raw.titles,
         controls: raw.controls,
         keys: raw.keys,
         lenses,
@@ -143,6 +149,10 @@ hide_windows = "windowless"
         assert!(cfg.start_at_login);
         assert!(cfg.menubar_icon);
         assert!(!cfg.peek.enabled);
+        assert_eq!(cfg.titles, Titles::default());
+        assert_eq!(cfg.titles.show, TitleShow::Title);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::End);
+        assert!(cfg.titles.markers);
         assert!(cfg.controls.arrow_keys);
         assert!(!cfg.controls.vim_keys);
         assert_eq!(cfg.controls.cursor_follows_focus, CursorFollowsFocus::Never);
@@ -173,6 +183,7 @@ hide_windows = "windowless"
         assert!(cfg.start_at_login);
         assert!(cfg.menubar_icon);
         assert!(!cfg.peek.enabled);
+        assert_eq!(cfg.titles, Titles::default());
         assert_eq!(cfg.controls, Controls::default());
         assert_eq!(cfg.keys, Keys::default());
 
@@ -184,8 +195,126 @@ hide_windows = "windowless"
         assert_eq!(cfg.lenses[1].spaces, Spaces::All);
         assert_eq!(cfg.lenses[1].windowless_apps, Disposition::End);
 
+        // PRD §4.7 shipped rules: Finder hidden when windowless, plus
+        // pass-through-when-fullscreen for every remote/VM client named there.
         assert_eq!(cfg.rules, default_rules());
-        assert_eq!(cfg, parse(PRD_EXAMPLE).unwrap());
+        assert_eq!(cfg.rules[0].bundle_prefix, "com.apple.finder");
+        assert_eq!(cfg.rules[0].hide_windows, Some(HideWindows::Windowless));
+        for prefix in [
+            "com.apple.ScreenSharing",
+            "com.microsoft.rdc.",
+            "com.teamviewer.",
+            "org.virtualbox.",
+            "com.parallels.",
+            "com.citrix.",
+            "com.vmware.fusion",
+            "com.utmapp.",
+        ] {
+            let rule = cfg
+                .rules
+                .iter()
+                .find(|r| r.bundle_prefix == prefix)
+                .unwrap_or_else(|| panic!("no shipped rule for {prefix}"));
+            assert_eq!(rule.pass_triggers, Some(PassTriggers::Fullscreen));
+        }
+
+        // The PRD §10 example is an illustration with a cut-down rule list, so
+        // it parses to the same globals and lenses but not the same rules.
+        let example = parse(PRD_EXAMPLE).unwrap();
+        assert_eq!(cfg.lenses, example.lenses);
+        assert_eq!(cfg.summon_delay_ms, example.summon_delay_ms);
+        assert_eq!(cfg.theme, example.theme);
+        assert_eq!(cfg.titles, example.titles);
+        assert_eq!(cfg.controls, example.controls);
+        assert_eq!(cfg.keys, example.keys);
+    }
+
+    #[test]
+    fn absent_titles_table_uses_builtin_defaults() {
+        let cfg = parse(
+            r#"
+summon_delay_ms = 0
+theme = "system"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles, Titles::default());
+    }
+
+    #[test]
+    fn parse_titles_variants() {
+        let cfg = parse(
+            r#"
+[titles]
+show = "both"
+truncate = "middle"
+markers = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles.show, TitleShow::Both);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::Middle);
+        assert!(!cfg.titles.markers);
+
+        let cfg = parse(
+            r#"
+[titles]
+show = "app"
+truncate = "start"
+markers = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles.show, TitleShow::App);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::Start);
+        assert!(cfg.titles.markers);
+    }
+
+    /// Inheritance is "from the first lens", not "from the previous one" — a
+    /// third lens must still take lens 1's values, not lens 2's.
+    #[test]
+    fn every_later_lens_inherits_from_the_first() {
+        let toml = r#"
+[[lens]]
+trigger = "cmd+tab"
+order = "alphabetical"
+style = "list"
+
+[[lens]]
+trigger = "alt+tab"
+style = "icons"
+
+[[lens]]
+trigger = "ctrl+tab"
+
+[[lens]]
+trigger = "cmd+grave"
+order = "created"
+"#;
+        let cfg = parse(toml).unwrap();
+        assert_eq!(cfg.lenses.len(), 4);
+        // Third lens sets nothing: everything comes from lens 1, not lens 2.
+        assert_eq!(cfg.lenses[2].style, Style::List);
+        assert_eq!(cfg.lenses[2].order, Order::Alphabetical);
+        // Second lens's own override does not leak forward.
+        assert_eq!(cfg.lenses[1].style, Style::Icons);
+        assert_eq!(cfg.lenses[3].style, Style::List);
+        assert_eq!(cfg.lenses[3].order, Order::Created);
+    }
+
+    #[test]
+    fn an_empty_trigger_on_a_later_lens_still_errors() {
+        let err = parse(
+            r#"
+[[lens]]
+trigger = "cmd+tab"
+
+[[lens]]
+trigger = ""
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyTrigger));
     }
 
     #[test]
@@ -283,6 +412,103 @@ theme = "dark"
         assert_eq!(cfg.summon_delay_ms, 10);
         assert_eq!(cfg.theme, Theme::Dark);
         assert_eq!(cfg.lenses, default_lenses());
+    }
+
+    /// TOML array-of-tables cannot distinguish "absent" from "empty", so an
+    /// omitted `[[rule]]` section means *no rules* rather than the shipped
+    /// defaults. That is deliberate: it keeps deleting the section a usable way
+    /// to say "none", and it keeps `parse(to_toml(c)) == c` true for a config
+    /// with no rules. A fresh install still gets the §4.7 defaults — they are
+    /// written into the first-run file, and `Config::default()` carries them
+    /// whenever no file exists.
+    #[test]
+    fn an_omitted_rule_section_means_no_rules_and_round_trips() {
+        let cfg = parse("theme = \"dark\"\n").unwrap();
+        assert!(cfg.rules.is_empty());
+        assert_eq!(parse(&to_toml(&cfg)).unwrap(), cfg);
+        assert_eq!(Config::default().rules, default_rules());
+    }
+
+    #[test]
+    fn empty_bundle_prefix_errors() {
+        // starts_with("") is true for every app — this must never parse.
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = ""
+hide_windows = "always"
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyBundlePrefix));
+
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = "   "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyBundlePrefix));
+    }
+
+    #[test]
+    fn blank_title_substrings_are_dropped_not_matched() {
+        // contains("") is true for every title.
+        let cfg = parse(
+            r#"
+[[rule]]
+bundle_prefix = "com.example."
+hide_windows = "title-contains"
+hide_title_substrings = ["", "  ", "draft"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.rules[0].hide_title_substrings,
+            vec!["draft".to_string()]
+        );
+    }
+
+    #[test]
+    fn title_contains_with_no_usable_substrings_errors() {
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = "com.example."
+hide_windows = "title-contains"
+hide_title_substrings = ["", "   "]
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::TitleContainsWithoutSubstrings(ref p) if p == "com.example."
+        ));
+    }
+
+    #[test]
+    fn summon_delay_is_clamped_to_the_documented_range() {
+        assert_eq!(
+            parse("summon_delay_ms = 5000\n").unwrap().summon_delay_ms,
+            900
+        );
+        assert_eq!(
+            parse("summon_delay_ms = 250\n").unwrap().summon_delay_ms,
+            250
+        );
+    }
+
+    #[test]
+    fn whitespace_only_trigger_errors() {
+        let err = parse(
+            r#"
+[[lens]]
+trigger = "   "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyTrigger));
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Theme {
     #[default]
@@ -11,7 +11,7 @@ pub enum Theme {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShowOn {
     #[default]
@@ -20,7 +20,7 @@ pub enum ShowOn {
     MenubarScreen,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CursorFollowsFocus {
     #[default]
@@ -29,7 +29,7 @@ pub enum CursorFollowsFocus {
     OtherScreen,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Apps {
     #[default]
@@ -38,7 +38,7 @@ pub enum Apps {
     Inactive,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Spaces {
     #[default]
@@ -47,7 +47,7 @@ pub enum Spaces {
     Hidden,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Screens {
     #[default]
@@ -55,7 +55,7 @@ pub enum Screens {
     StripScreen,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Disposition {
     #[default]
@@ -65,7 +65,7 @@ pub enum Disposition {
     Hide,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Order {
     #[default]
@@ -75,7 +75,7 @@ pub enum Order {
     Space,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Style {
     #[default]
@@ -84,7 +84,7 @@ pub enum Style {
     List,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Size {
     Small,
@@ -94,7 +94,7 @@ pub enum Size {
     Auto,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OnRelease {
     #[default]
@@ -103,7 +103,7 @@ pub enum OnRelease {
     Filter,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PassTriggers {
     Never,
@@ -111,7 +111,7 @@ pub enum PassTriggers {
     Fullscreen,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HideWindows {
     Never,
@@ -120,13 +120,49 @@ pub enum HideWindows {
     TitleContains,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Peek {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleShow {
+    #[default]
+    Title,
+    App,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleTruncate {
+    Start,
+    Middle,
+    #[default]
+    End,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Titles {
+    pub show: TitleShow,
+    pub truncate: TitleTruncate,
+    pub markers: bool,
+}
+
+impl Default for Titles {
+    fn default() -> Self {
+        Self {
+            show: TitleShow::Title,
+            truncate: TitleTruncate::End,
+            markers: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Controls {
@@ -147,7 +183,7 @@ impl Default for Controls {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Keys {
     pub focus: String,
@@ -173,15 +209,15 @@ impl Default for Keys {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub bundle_prefix: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_triggers: Option<PassTriggers>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_windows: Option<HideWindows>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide_title_substrings: Vec<String>,
 }
 
@@ -210,7 +246,7 @@ pub fn to_model_rules(rules: &[Rule]) -> model::Rules {
     model::Rules::new(rules.iter().map(Rule::to_model_rule).collect())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ResolvedLens {
     pub trigger: String,
     pub apps: Apps,
@@ -299,21 +335,35 @@ pub(crate) fn default_lenses() -> Vec<ResolvedLens> {
     vec![first, second]
 }
 
+/// PRD §4.7 shipped defaults: Finder hidden when it has no window, and
+/// pass-through-when-fullscreen for the capture-everything remote/VM clients.
 pub(crate) fn default_rules() -> Vec<Rule> {
-    vec![
-        Rule {
-            bundle_prefix: "com.parallels.".into(),
-            pass_triggers: Some(PassTriggers::Always),
-            hide_windows: None,
-            hide_title_substrings: Vec::new(),
-        },
-        Rule {
-            bundle_prefix: "com.apple.finder".into(),
-            pass_triggers: None,
-            hide_windows: Some(HideWindows::Windowless),
-            hide_title_substrings: Vec::new(),
-        },
-    ]
+    let pass_fullscreen = |prefix: &str| Rule {
+        bundle_prefix: prefix.into(),
+        pass_triggers: Some(PassTriggers::Fullscreen),
+        hide_windows: None,
+        hide_title_substrings: Vec::new(),
+    };
+    let mut rules = vec![Rule {
+        bundle_prefix: "com.apple.finder".into(),
+        pass_triggers: None,
+        hide_windows: Some(HideWindows::Windowless),
+        hide_title_substrings: Vec::new(),
+    }];
+    rules.extend(
+        [
+            "com.apple.ScreenSharing",
+            "com.microsoft.rdc.",
+            "com.teamviewer.",
+            "org.virtualbox.",
+            "com.parallels.",
+            "com.citrix.",
+            "com.vmware.fusion",
+            "com.utmapp.",
+        ]
+        .map(pass_fullscreen),
+    );
+    rules
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +407,7 @@ pub(crate) struct RawConfig {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub titles: Titles,
     pub controls: Controls,
     pub keys: Keys,
     #[serde(default, rename = "lens")]
@@ -375,6 +426,7 @@ impl Default for RawConfig {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            titles: Titles::default(),
             controls: Controls::default(),
             keys: Keys::default(),
             lenses: Vec::new(),
@@ -383,13 +435,41 @@ impl Default for RawConfig {
     }
 }
 
+/// PRD §4.6 documents the apparition delay as 0–900 ms. The loop clamps too,
+/// but clamping here means the value the settings window reads back and writes
+/// is the value actually in force.
+pub(crate) const MAX_SUMMON_DELAY_MS: u32 = 900;
+
+/// Rules come from a hand-edited file, and the two empty-string cases are
+/// silent disasters: `starts_with("")` matches every app, and `contains("")`
+/// matches every title — one stray blank would hide the whole strip.
+pub(crate) fn validate_rules(rules: &mut [Rule]) -> Result<(), ConfigError> {
+    for rule in rules.iter_mut() {
+        if rule.bundle_prefix.trim().is_empty() {
+            return Err(ConfigError::EmptyBundlePrefix);
+        }
+        rule.hide_title_substrings
+            .retain(|sub| !sub.trim().is_empty());
+        if rule.hide_windows == Some(HideWindows::TitleContains)
+            && rule.hide_title_substrings.is_empty()
+        {
+            return Err(ConfigError::TitleContainsWithoutSubstrings(
+                rule.bundle_prefix.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_lenses(raw: &[RawLens]) -> Result<Vec<ResolvedLens>, ConfigError> {
     if raw.is_empty() {
         return Ok(default_lenses());
     }
 
     for lens in raw {
-        if lens.trigger.is_empty() {
+        // Whitespace-only is just as unusable as empty, and would otherwise
+        // round-trip into a lens that can never register.
+        if lens.trigger.trim().is_empty() {
             return Err(ConfigError::EmptyTrigger);
         }
     }

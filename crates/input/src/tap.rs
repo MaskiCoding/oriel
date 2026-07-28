@@ -68,10 +68,18 @@ unsafe extern "C-unwind" fn trampoline(
     user_info: *mut c_void,
 ) -> *mut CGEvent {
     let ctx = unsafe { &mut *user_info.cast::<Ctx>() };
-    if ty == CGEventType::TapDisabledByTimeout || ty == CGEventType::TapDisabledByUserInput {
+    // Only a *timeout* disable is the OS telling us the tap ran long and
+    // should come back (PRD §5.4). `TapDisabledByUserInput` is also what an
+    // intentional `tap_enable(port, false)` delivers, so re-enabling on it
+    // would immediately undo `TapHandle::set_enabled(false)` and leave the
+    // absorbing key tap live outside a session.
+    if ty == CGEventType::TapDisabledByTimeout {
         if let Some(port) = unsafe { ctx.port.as_ref() } {
             CGEvent::tap_enable(port, true);
         }
+        return event.as_ptr();
+    }
+    if ty == CGEventType::TapDisabledByUserInput {
         return event.as_ptr();
     }
     // The trampoline is `C-unwind`, so a panic here would unwind into CoreGraphics.

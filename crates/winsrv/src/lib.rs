@@ -1,6 +1,11 @@
 //! `WindowServer` integration: enumeration, batched state queries, event tap, Space topology.
 
 mod focus;
+mod screen;
+
+pub use screen::screen_index;
+
+use std::collections::HashMap;
 
 use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
@@ -29,7 +34,9 @@ pub struct WindowInfo {
     pub level: i32,
     pub tags: u64,
     pub attributes: u64,
-    /// On-screen frame in points; zero-sized when the `WindowServer` has none.
+    /// On-screen frame in points (top-left origin); zero-sized when the `WindowServer` has none.
+    pub x: f64,
+    pub y: f64,
     pub width: f64,
     pub height: f64,
     pub app: Option<String>,
@@ -124,6 +131,11 @@ impl WindowServer {
             let pid = unsafe { self.sl.SLSWindowIteratorGetPID.unwrap()(raw_ptr(&iter)) };
             let wid = unsafe { self.sl.SLSWindowIteratorGetWindowID.unwrap()(raw_ptr(&iter)) };
             let bounds = unsafe { self.sl.SLSWindowIteratorGetBounds.unwrap()(raw_ptr(&iter)) };
+            let app = app_name(pid);
+            // Titles cost one IPC each and most of these rows get filtered out
+            // before anything is drawn, so they are filled in afterwards for the
+            // survivors only — see `fill_titles`.
+            let title = None;
             windows.push(WindowInfo {
                 wid,
                 pid,
@@ -133,10 +145,12 @@ impl WindowServer {
                 attributes: unsafe {
                     self.sl.SLSWindowIteratorGetAttributes.unwrap()(raw_ptr(&iter))
                 },
+                x: bounds.x,
+                y: bounds.y,
                 width: bounds.w,
                 height: bounds.h,
-                app: app_name(pid),
-                title: self.window_title(wid),
+                app,
+                title,
             });
         }
         windows
@@ -145,6 +159,65 @@ impl WindowServer {
     /// The Space `wid` lives on. 0x7 asks across current, other, and
     /// minimized-window Spaces. Per-window by necessity: the batched form of
     /// the call returns the distinct Spaces of the set, not one per window.
+    /// Fills in `title` for the windows that survived filtering. Each one is a
+    /// separate `SLSCopyWindowProperty` round trip, so this deliberately runs
+    /// after the caller has discarded the rows it will never show. Falls back
+    /// to the app name, so a caption is never empty.
+    pub fn fill_titles(&self, windows: &mut [WindowInfo]) {
+        let key = CFString::from_str("kCGSWindowTitle");
+        for w in windows.iter_mut() {
+            w.title = match self.window_title_with(&key, w.wid) {
+                Some(t) if !t.trim().is_empty() => Some(t),
+                _ => w.app.clone(),
+            };
+        }
+    }
+
+    /// Window id → Space id for every Space in `space_ids`.
+    ///
+    /// `SLSCopySpacesForWindows` answers with the *distinct* Spaces of the set
+    /// rather than one per window, so it cannot be batched. Asking each Space
+    /// which windows it holds inverts the problem: one round trip per Space
+    /// instead of one per window, which is what the summon path can afford.
+    pub fn windows_by_space(&self, space_ids: &[u64]) -> HashMap<u32, u64> {
+        let mut out = HashMap::new();
+        for &space in space_ids {
+            for wid in self.window_ids_on(space) {
+                out.entry(wid).or_insert(space);
+            }
+        }
+        out
+    }
+
+    fn window_ids_on(&self, space: u64) -> Vec<u32> {
+        let ids = [CFNumber::new_i64(space.cast_signed())];
+        let spaces = CFArray::from_retained_objects(&ids);
+        let mut set_tags = 0_u64;
+        let mut clear_tags = 0_u64;
+        let raw = unsafe {
+            self.sl.SLSCopyWindowsWithOptionsAndTags.unwrap()(
+                self.cid,
+                0,
+                raw_ptr(&spaces),
+                0x7,
+                &raw mut set_tags,
+                &raw mut clear_tags,
+            )
+        };
+        let Some(list) = (unsafe { retained::<CFArray>(raw) }) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(usize::try_from(list.count()).unwrap_or(0));
+        for i in 0..list.count() {
+            if let Some(n) = unsafe { element::<CFNumber>(&list, i) }
+                && let Some(v) = n.as_i64()
+            {
+                out.push(u32::try_from(v).unwrap_or(0));
+            }
+        }
+        out
+    }
+
     pub fn window_space(&self, wid: u32) -> Option<u64> {
         let ids = [CFNumber::new_i32(wid.cast_signed())];
         let list = CFArray::from_retained_objects(&ids);
@@ -158,11 +231,12 @@ impl WindowServer {
         space.as_i64().map(i64::cast_unsigned)
     }
 
-    fn window_title(&self, wid: u32) -> Option<String> {
-        let key = CFString::from_str("kCGSWindowTitle");
+    /// The property key is built once by the caller — `CFString::from_str` per
+    /// window is pure overhead on a list of dozens.
+    fn window_title_with(&self, key: &CFRetained<CFString>, wid: u32) -> Option<String> {
         let mut out: skylight_sys::CFTypeRef = core::ptr::null();
         let err = unsafe {
-            self.sl.SLSCopyWindowProperty.unwrap()(self.cid, wid, raw_ptr(&key), &raw mut out)
+            self.sl.SLSCopyWindowProperty.unwrap()(self.cid, wid, raw_ptr(key), &raw mut out)
         };
         if err != 0 {
             return None;

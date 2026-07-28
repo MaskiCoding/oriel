@@ -90,11 +90,9 @@ skylight! {
         SLSMainConnectionID: fn() -> c_int;
         SLSCopyWindowsWithOptionsAndTags: fn(c_int, u32, CFArrayRef, u32, *mut u64, *mut u64) -> CFArrayRef;
         SLSCopyManagedDisplaySpaces: fn(c_int) -> CFArrayRef;
-        SLSGetActiveSpace: fn(c_int) -> u64;
         SLSCopySpacesForWindows: fn(c_int, c_int, CFArrayRef) -> CFArrayRef;
         SLSWindowQueryWindows: fn(c_int, CFArrayRef, c_int) -> CFTypeRef;
         SLSWindowQueryResultCopyWindows: fn(CFTypeRef) -> CFTypeRef;
-        SLSWindowIteratorGetCount: fn(CFTypeRef) -> c_int;
         SLSWindowIteratorAdvance: fn(CFTypeRef) -> bool;
         SLSWindowIteratorGetWindowID: fn(CFTypeRef) -> u32;
         SLSWindowIteratorGetParentID: fn(CFTypeRef) -> u32;
@@ -104,8 +102,6 @@ skylight! {
         SLSWindowIteratorGetLevel: fn(CFTypeRef) -> c_int;
         SLSWindowIteratorGetBounds: fn(CFTypeRef) -> Rect;
         SLSCopyWindowProperty: fn(c_int, u32, CFStringRef, *mut CFTypeRef) -> c_int;
-        CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
-        CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
         _SLPSSetFrontProcessWithOptions: fn(*const Psn, u32, u32) -> c_int;
         SLPSPostEventRecordTo: fn(*const Psn, *const u8) -> c_int;
     }
@@ -113,6 +109,11 @@ skylight! {
     // windows. Two spellings of the same function; the `SLS` name is native to
     // SkyLight, `CGS` is a re-exported alias — resolve both, use whichever hits.
     optional {
+        // Native-switcher suppression. Absent means Oriel runs alongside the
+        // system switcher rather than refusing to start (PRD §6: degrade per
+        // capability, never fail the whole connection).
+        CGSSetSymbolicHotKeyEnabled: fn(c_int, bool) -> c_int;
+        CGSIsSymbolicHotKeyEnabled: fn(c_int) -> bool;
         SLSHWCaptureWindowList: fn(c_int, *mut u32, u32, u32) -> CFArrayRef;
         CGSHWCaptureWindowList: fn(c_int, *mut u32, u32, u32) -> CFArrayRef;
     }
