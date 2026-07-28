@@ -1534,10 +1534,10 @@ impl Strip {
         // colour underneath keeps recombining instead of looping visibly.
         let reach = bounds.size.width.max(bounds.size.height);
         for (red, green, blue, alpha, size, sway, x_secs, y_secs) in [
-            (0.62, 0.90, 1.00, 0.30, 0.95, 0.22, 13.0, 17.0),
-            (0.80, 0.76, 1.00, 0.26, 1.10, 0.26, 19.0, 11.0),
-            (0.72, 1.00, 0.93, 0.22, 0.85, 0.20, 23.0, 15.0),
-            (1.00, 0.86, 0.92, 0.20, 0.90, 0.24, 16.0, 21.0),
+            (0.30, 0.74, 1.00, 0.34, 0.95, 0.22, 13.0, 17.0),
+            (0.58, 0.42, 1.00, 0.30, 1.10, 0.26, 19.0, 11.0),
+            (0.34, 1.00, 0.78, 0.26, 0.85, 0.20, 23.0, 15.0),
+            (1.00, 0.48, 0.72, 0.24, 0.90, 0.24, 16.0, 21.0),
         ] {
             let span = reach * size;
             let blob = CAGradientLayer::new();
@@ -1565,6 +1565,18 @@ impl Strip {
                 let _: () = msg_send![&*blob, setEndPoint: NSPoint::new(1.0, 1.0)];
             }
             blob.setLocations(Some(&stops(&[0.0, 1.0])));
+            // Blended as light, not as paint. A translucent colour laid over a
+            // dark preview composites toward grey — the chroma is crushed by
+            // the background it is mixing with, which is why saturated stops
+            // still came out as a white haze. Screen blending adds instead of
+            // mixing, so the hue survives on dark pixels and bright parts of
+            // the preview stay readable.
+            unsafe {
+                let _: () = msg_send![
+                    &*blob,
+                    setCompositingFilter: &*NSString::from_str("screenBlendMode")
+                ];
+            }
 
             for (axis, seconds) in [("x", x_secs), ("y", y_secs)] {
                 let travel = reach * sway;
