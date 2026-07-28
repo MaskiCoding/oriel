@@ -52,9 +52,9 @@ pub struct Tile {
     pub lantern: bool,
 }
 
-/// The lit mark. A small filled bloom, not a spinner: an oriel is a window, and
-/// a window with its light on means someone is working behind it.
-const LANTERN_MARK: &str = "✿";
+/// The lit mark: a single small pane with the light on. An oriel is a bay
+/// window, so the mark is a lit pane of it — not a bloom, not a spinner.
+const LANTERN_MARK: &str = "▪";
 
 /// Rose from Oriel's own icon. Deliberately not the warning-amber every other
 /// tool reaches for, and it never moves.
