@@ -2,9 +2,13 @@
 
 #[path = "keys.rs"]
 mod keys;
+#[path = "reload.rs"]
+mod reload;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
@@ -14,6 +18,8 @@ use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
 
 use crate::lens::{self, Binding};
+use crate::login;
+use crate::menubar::{MenuBar, MenuCommand};
 use keys::{ActionKeys, Dir, KEY_DELETE};
 
 /// Runs `work` on the main run loop after `delay_ms`, outside the current event
@@ -179,6 +185,11 @@ fn quit_pid(pid: i32) {
     }
 }
 
+fn config_path() -> PathBuf {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".config/oriel/config.toml")
+}
+
 /// The preview cache's hard byte budget; at tile-sized thumbnails this is on
 /// the order of a hundred windows.
 const PREVIEW_BUDGET: usize = 32 << 20;
@@ -199,6 +210,7 @@ struct Live {
 /// run to completion on the one main run loop, so the borrows never overlap —
 /// this holds only while no method here spins a nested run loop (e.g. a modal).
 struct App {
+    mtm: MainThreadMarker,
     ws: Rc<winsrv::WindowServer>,
     strip: ui::Strip,
     session: Option<Live>,
@@ -224,6 +236,22 @@ struct App {
     /// `None` without Screen Recording permission — the strip then stays on
     /// the icon layout.
     worker: Option<capture::Worker>,
+    config: config::Config,
+    config_path: PathBuf,
+    rules: model::Rules,
+    /// Bundle-ID cache keyed by pid — lookups are on the summon hot path.
+    bundles: HashMap<i32, Option<String>>,
+    /// Carbon hot keys. Dropped (unregistered) while paused or while the
+    /// frontmost app's rule says pass-through — Carbon consumes the combo once
+    /// registered, so the only way to let the focused app see it is to not hold
+    /// the registration.
+    hotkeys: Option<input::Hotkeys>,
+    suppression: Option<input::Suppression>,
+    paused: bool,
+    menubar: Option<MenuBar>,
+    settings: Option<ui::Settings>,
+    /// Config arrived while a session was open; applied on close.
+    pending_config: Option<config::Config>,
 }
 
 impl App {
@@ -235,6 +263,9 @@ impl App {
     /// the same lens is ignored (cycling is the key tap's job) and a different
     /// lens morphs the strip in place.
     fn trigger(&mut self, id: u32) {
+        if self.paused {
+            return;
+        }
         let (idx, backward) = lens::decode_hotkey_id(id);
         if idx >= self.bindings.len() {
             return;
@@ -716,6 +747,7 @@ impl App {
         self.strip.set_query(None);
         self.strip.hide();
         self.set_keys_enabled(false);
+        self.flush_pending_config();
     }
 
     /// Ends the session and focuses the current selection, deferred briefly so
@@ -740,6 +772,7 @@ impl App {
             self.mru.touch(model::WindowId(wid));
             on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
         }
+        self.flush_pending_config();
     }
 
     fn set_keys_enabled(&self, enabled: bool) {
@@ -749,7 +782,8 @@ impl App {
     }
 
     fn enumerate(&mut self, binding: &Binding) -> Vec<Candidate> {
-        let snap = crate::snapshot::snapshot(&self.ws, &mut self.mru);
+        let snap =
+            crate::snapshot::snapshot_with(&self.ws, &mut self.mru, &self.rules, &mut self.bundles);
         let ids: Vec<model::WindowId> = snap.windows.iter().map(|w| w.id).collect();
         self.cache.retain(|wid| ids.contains(&model::WindowId(wid)));
 
@@ -838,6 +872,163 @@ impl App {
             worker.request(wid);
         }
     }
+
+    fn frontmost_should_pass(&mut self) -> bool {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let Some(app) = workspace.frontmostApplication() else {
+            return false;
+        };
+        let pid = app.processIdentifier();
+        let Some(bid) = crate::snapshot::bundle_id(pid, &mut self.bundles) else {
+            return false;
+        };
+        let bid = bid.to_owned();
+        let fullscreen = ax::focused_window(pid)
+            .and_then(|wid| ax::is_fullscreen(pid, wid))
+            .unwrap_or(false);
+        self.rules.passes_trigger(&bid, fullscreen)
+    }
+
+    /// Register or drop Carbon hot keys so a pass-through frontmost app (or a
+    /// paused Oriel) actually receives the trigger combo.
+    fn sync_hotkeys(&mut self) {
+        let pass = self.paused || self.frontmost_should_pass();
+        if pass {
+            self.hotkeys = None;
+            return;
+        }
+        if self.hotkeys.is_some() {
+            return;
+        }
+        let triggers = lens::triggers_for(&self.bindings);
+        if triggers.is_empty() {
+            return;
+        }
+        self.hotkeys = input::Hotkeys::register(&triggers, |id| {
+            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                app.borrow_mut().trigger(id);
+            }
+        });
+    }
+
+    fn on_app_activated(&mut self) {
+        if let Some(wid) = front_window() {
+            self.mru.touch(model::WindowId(wid));
+            self.request_preview(wid);
+        }
+        self.sync_hotkeys();
+    }
+
+    fn menu_command(&mut self, cmd: MenuCommand) {
+        match cmd {
+            MenuCommand::Settings => self.show_settings(),
+            MenuCommand::TogglePause => self.toggle_pause(),
+            MenuCommand::Restart => self.restart(),
+            MenuCommand::Quit => self.quit(),
+        }
+    }
+
+    fn show_settings(&mut self) {
+        if self.settings.is_none() {
+            let path = self.config_path.clone();
+            let settings = ui::Settings::new(self.mtm, &self.config, move |edited| {
+                if let Err(err) = config::save(&edited, &path) {
+                    println!("config: save failed — {err}");
+                }
+            });
+            self.settings = Some(settings);
+        }
+        if let Some(settings) = &self.settings {
+            settings.show();
+        }
+    }
+
+    fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        if self.paused {
+            self.suppression = None;
+            if self.session.is_some() {
+                self.cancel();
+            }
+        } else {
+            self.suppression = input::Suppression::engage();
+            if self.suppression.is_none() {
+                println!("input: native switcher not suppressed — it stays live alongside Oriel");
+            }
+        }
+        if let Some(mb) = &self.menubar {
+            mb.set_paused(self.paused);
+        }
+        self.sync_hotkeys();
+    }
+
+    fn quit(&mut self) {
+        // Drop suppression before AppKit terminates so the native switcher is
+        // restored even if Rust destructors do not run on process exit.
+        self.hotkeys = None;
+        self.suppression = None;
+        NSApplication::sharedApplication(self.mtm).terminate(None);
+    }
+
+    fn restart(&mut self) {
+        self.hotkeys = None;
+        self.suppression = None;
+        if let Ok(exe) = std::env::current_exe() {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let _ = std::process::Command::new(exe).args(args).spawn();
+        }
+        NSApplication::sharedApplication(self.mtm).terminate(None);
+    }
+
+    fn flush_pending_config(&mut self) {
+        if let Some(cfg) = self.pending_config.take() {
+            self.apply_config(cfg);
+        }
+    }
+
+    fn apply_config(&mut self, cfg: config::Config) {
+        if self.session.is_some() {
+            self.pending_config = Some(cfg);
+            return;
+        }
+        if cfg == self.config {
+            return;
+        }
+
+        let login_changed = cfg.start_at_login != self.config.start_at_login;
+        let menubar_wanted = cfg.menubar_icon;
+        let menubar_changed = menubar_wanted != self.config.menubar_icon;
+
+        self.bindings = lens::bindings_from_config(&cfg);
+        self.summon_delay_ms = cfg.summon_delay_ms.min(900);
+        self.action_keys = ActionKeys::resolve(&cfg.keys);
+        self.controls = cfg.controls.clone();
+        self.rules = config::to_model_rules(&cfg.rules);
+        self.config = cfg;
+
+        if login_changed {
+            let _ = login::set_enabled(self.config.start_at_login);
+        }
+
+        if menubar_changed {
+            if menubar_wanted {
+                self.menubar = MenuBar::new(|cmd| {
+                    if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                        app.borrow_mut().menu_command(cmd);
+                    }
+                });
+                if let Some(mb) = &self.menubar {
+                    mb.set_paused(self.paused);
+                }
+            } else {
+                self.menubar = None;
+            }
+        }
+
+        // Force a fresh registration against the new trigger set.
+        self.hotkeys = None;
+        self.sync_hotkeys();
+    }
 }
 
 fn frontmost_pid() -> i32 {
@@ -854,6 +1045,86 @@ fn front_window() -> Option<u32> {
     let workspace = NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication()?;
     ax::focused_window(app.processIdentifier())
+}
+
+fn install_session_taps(app: &Rc<RefCell<App>>) -> Option<(input::EventTap, input::EventTap)> {
+    let on_key = app.clone();
+    let key_mask = input::event_mask(&[CGEventType::KeyDown]);
+    let Some(key_tap) =
+        input::EventTap::install(CGEventTapOptions::Default, key_mask, move |_ty, ev| {
+            on_key.borrow_mut().on_key(ev)
+        })
+    else {
+        println!("input: could not install the session key tap (accessibility?)");
+        return None;
+    };
+    let keys = key_tap.handle();
+    keys.set_enabled(false);
+    app.borrow_mut().keys = Some(keys);
+
+    let on_flags = app.clone();
+    let mask = input::event_mask(&[CGEventType::FlagsChanged]);
+    let Some(flags_tap) =
+        input::EventTap::install(CGEventTapOptions::ListenOnly, mask, move |_ty, ev| {
+            on_flags.borrow_mut().flags_changed(input::flags(ev));
+            input::Disposition::Keep
+        })
+    else {
+        println!("input: could not install the release tap (accessibility?)");
+        return None;
+    };
+    Some((key_tap, flags_tap))
+}
+
+struct ActivationHook {
+    _observer:
+        objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>,
+    _block: block2::RcBlock<dyn Fn(core::ptr::NonNull<objc2_foundation::NSNotification>)>,
+}
+
+fn install_activation_observer(app: &Rc<RefCell<App>>) -> ActivationHook {
+    let on_activate = app.clone();
+    let block = block2::RcBlock::new(
+        move |_: core::ptr::NonNull<objc2_foundation::NSNotification>| {
+            on_activate.borrow_mut().on_app_activated();
+        },
+    );
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    let observer = unsafe {
+        workspace
+            .notificationCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(objc2_app_kit::NSWorkspaceDidActivateApplicationNotification),
+                None,
+                None,
+                &block,
+            )
+    };
+    ActivationHook {
+        _observer: observer,
+        _block: block,
+    }
+}
+
+fn boot_triggers(app: &Rc<RefCell<App>>, want_menubar: bool) -> bool {
+    let mut a = app.borrow_mut();
+    if want_menubar {
+        a.menubar = MenuBar::new(|cmd| {
+            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                app.borrow_mut().menu_command(cmd);
+            }
+        });
+    }
+    a.sync_hotkeys();
+    if a.hotkeys.is_some() || a.paused {
+        return true;
+    }
+    let triggers = lens::triggers_for(&a.bindings);
+    if triggers.is_empty() || a.frontmost_should_pass() {
+        return true;
+    }
+    println!("input: could not register triggers");
+    false
 }
 
 /// Boots the resident app: suppresses the native switcher, binds the triggers
@@ -875,93 +1146,60 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         println!("input: no lenses registered");
         return;
     }
-    let summon_delay_ms = cfg.summon_delay_ms.min(900);
-    let triggers = lens::triggers_for(&bindings);
-    let action_keys = ActionKeys::resolve(&cfg.keys);
-    let controls = cfg.controls.clone();
+    let _ = login::set_enabled(cfg.start_at_login);
+    let path = config_path();
 
-    let strip = ui::Strip::new(mtm);
     let app = Rc::new(RefCell::new(App {
+        mtm,
         ws: Rc::new(ws),
-        strip,
+        strip: ui::Strip::new(mtm),
         session: None,
         bindings,
-        summon_delay_ms,
+        summon_delay_ms: cfg.summon_delay_ms.min(900),
         show_epoch: 0,
         keys: None,
-        action_keys,
-        controls,
+        action_keys: ActionKeys::resolve(&cfg.keys),
+        controls: cfg.controls.clone(),
         held: CGEventFlags::empty(),
         generation: Rc::new(Cell::new(0)),
         mru: model::Mru::default(),
         cache: capture::Cache::new(PREVIEW_BUDGET),
         worker: None,
+        config: cfg.clone(),
+        config_path: path.clone(),
+        rules: config::to_model_rules(&cfg.rules),
+        bundles: HashMap::new(),
+        hotkeys: None,
+        suppression: None,
+        paused: false,
+        menubar: None,
+        settings: None,
+        pending_config: None,
     }));
     APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
     spawn_capture(&app);
 
-    let on_trigger = app.clone();
-    let Some(_hotkeys) = input::Hotkeys::register(&triggers, move |id| {
-        on_trigger.borrow_mut().trigger(id);
-    }) else {
-        println!("input: could not register triggers");
+    if !boot_triggers(&app, cfg.menubar_icon) {
+        return;
+    }
+    let Some(_taps) = install_session_taps(&app) else {
         return;
     };
+    let _observer = install_activation_observer(&app);
 
-    let on_key = app.clone();
-    let key_mask = input::event_mask(&[CGEventType::KeyDown]);
-    let Some(key_tap) =
-        input::EventTap::install(CGEventTapOptions::Default, key_mask, move |_ty, ev| {
-            on_key.borrow_mut().on_key(ev)
-        })
-    else {
-        println!("input: could not install the session key tap (accessibility?)");
-        return;
-    };
-    let keys = key_tap.handle();
-    keys.set_enabled(false);
-    app.borrow_mut().keys = Some(keys);
-
-    let on_flags = app.clone();
-    let mask = input::event_mask(&[CGEventType::FlagsChanged]);
-    let Some(_tap) =
-        input::EventTap::install(CGEventTapOptions::ListenOnly, mask, move |_ty, ev| {
-            on_flags.borrow_mut().flags_changed(input::flags(ev));
-            input::Disposition::Keep
-        })
-    else {
-        println!("input: could not install the release tap (accessibility?)");
-        return;
-    };
-
-    // Track focus changes made outside Oriel: on each app activation, record
-    // where the user landed so the MRU order stays honest, and refresh that
-    // window's preview while it is front and current.
-    let on_activate = app.clone();
-    let block = block2::RcBlock::new(
-        move |_: core::ptr::NonNull<objc2_foundation::NSNotification>| {
-            if let Some(wid) = front_window() {
-                let mut app = on_activate.borrow_mut();
-                app.mru.touch(model::WindowId(wid));
-                app.request_preview(wid);
+    reload::spawn(path, |cfg| {
+        on_main(move || {
+            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                app.borrow_mut().apply_config(cfg);
             }
-        },
-    );
-    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
-    let _observer = unsafe {
-        workspace
-            .notificationCenter()
-            .addObserverForName_object_queue_usingBlock(
-                Some(objc2_app_kit::NSWorkspaceDidActivateApplicationNotification),
-                None,
-                None,
-                &block,
-            )
-    };
+        });
+    });
 
     let suppression = input::Suppression::engage();
     if suppression.is_none() {
         println!("input: native switcher not suppressed — it stays live alongside Oriel");
     }
+    app.borrow_mut().suppression = suppression;
+
     ns_app.run();
 }
