@@ -167,7 +167,13 @@ impl Metrics {
         let s = scale;
         Self {
             preview_h: PREVIEW_H * s,
-            caption_h: CAPTION_H * s,
+            // The caption draws with clamped font and icon sizes, so its band
+            // must never shrink below what it actually renders.
+            caption_h: (CAPTION_H * s).max(
+                (16.0 * s)
+                    .clamp(12.0, 20.0)
+                    .max((12.0 * s).clamp(10.0, 14.0) + 5.0),
+            ),
             icon: ICON * s,
             icons_icon: ICONS_ICON * s,
             min_w: MIN_W * s,
@@ -229,6 +235,7 @@ fn size_scale(
     aspects: &[f64],
     screen_w: f64,
     screen_h: f64,
+    query_space: f64,
 ) -> f64 {
     let ceiling = match size {
         Size::Small => SCALE_SMALL,
@@ -236,7 +243,15 @@ fn size_scale(
         // Auto has no ceiling of its own beyond the largest step.
         Size::Large | Size::Auto => SCALE_LARGE,
     };
-    scale_under(ceiling, style, tiles, aspects, screen_w, screen_h)
+    scale_under(
+        ceiling,
+        style,
+        tiles,
+        aspects,
+        screen_w,
+        screen_h,
+        query_space,
+    )
 }
 
 /// Picks a scale so every tile fits on one screen for the active style. More
@@ -244,7 +259,7 @@ fn size_scale(
 /// instead of collapsing to zero.
 #[cfg(test)]
 fn auto_scale(style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
-    scale_under(SCALE_LARGE, style, tiles, &[], screen_w, screen_h)
+    scale_under(SCALE_LARGE, style, tiles, &[], screen_w, screen_h, 0.0)
 }
 
 /// Largest candidate scale at or below `ceiling` whose panel fits the screen.
@@ -255,6 +270,7 @@ fn scale_under(
     aspects: &[f64],
     screen_w: f64,
     screen_h: f64,
+    query_space: f64,
 ) -> f64 {
     if tiles == 0 || screen_w <= 0.0 || screen_h <= 0.0 {
         return ceiling.min(SCALE_MEDIUM);
@@ -295,7 +311,17 @@ fn scale_under(
         ],
     };
     for &scale in candidates {
-        if scale <= ceiling && panel_fits(style, tiles, aspects, screen_w, screen_h, scale) {
+        if scale <= ceiling
+            && panel_fits(
+                style,
+                tiles,
+                aspects,
+                screen_w,
+                screen_h,
+                scale,
+                query_space,
+            )
+        {
             return scale;
         }
     }
@@ -383,6 +409,7 @@ fn panel_fits(
     screen_w: f64,
     screen_h: f64,
     scale: f64,
+    query_space: f64,
 ) -> bool {
     let m = Metrics::at(scale);
     let plan = match style {
@@ -393,13 +420,27 @@ fn panel_fits(
                 aspects.iter().map(|&a| gallery_tile_width(a, &m)).collect()
             };
             let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
-            layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad, 0.0)
+            layout_sized(
+                &widths,
+                max_content,
+                m.gallery_tile_h(),
+                m.gap,
+                m.pad,
+                query_space,
+            )
         }
         Style::Icons => {
             let tw = m.icons_tile_w();
             let widths = vec![tw; tiles];
             let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(tw);
-            layout_sized(&widths, max_content, m.icons_tile_h(), m.gap, m.pad, 0.0)
+            layout_sized(
+                &widths,
+                max_content,
+                m.icons_tile_h(),
+                m.gap,
+                m.pad,
+                query_space,
+            )
         }
         Style::List => {
             // Worst-case column width — titles aren't known at auto-scale time.
@@ -409,7 +450,7 @@ fn panel_fits(
                 m.list_row_h(),
                 m.list_gap,
                 m.list_pad,
-                0.0,
+                query_space,
                 screen_h,
             )
         }
@@ -1145,6 +1186,7 @@ impl Strip {
             &aspects,
             screen_w,
             screen_h,
+            self.query_space.get(),
         );
         self.scale.set(scale);
         let m = Metrics::at(scale);
@@ -1759,14 +1801,32 @@ mod tests {
                 (Size::Large, SCALE_LARGE),
             ] {
                 for &n in &[1usize, 8, 40, 120] {
-                    let s = size_scale(size, style, n, &[], 1440.0, 900.0);
+                    let s = size_scale(size, style, n, &[], 1440.0, 900.0, 0.0);
                     assert!(s <= ceiling, "{style:?} {size:?} n={n}: {s} above ceiling");
                     assert!(
-                        panel_fits(style, n, &[], 1440.0, 900.0, s),
+                        panel_fits(style, n, &[], 1440.0, 900.0, s, 0.0),
                         "{style:?} {size:?} n={n}: scale {s} overflows"
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_caption_band_always_fits_what_it_draws() {
+        // Gallery and Icons both size their tiles from `caption_h`; if it can
+        // fall below the clamped icon/font the caption spills out of the tile.
+        let mut s = 1.6;
+        while s > 0.01 {
+            let m = Metrics::at(s);
+            let drawn = m.caption_icon.max(m.title_font + 5.0);
+            assert!(
+                m.caption_h >= drawn,
+                "caption band {} shorter than its contents {} at scale {s}",
+                m.caption_h,
+                drawn
+            );
+            s -= 0.01;
         }
     }
 
@@ -1809,7 +1869,7 @@ mod tests {
     fn a_crowded_list_lays_out_without_panicking() {
         // The reachable path: List + Auto + many windows on a short screen.
         for &n in &[1usize, 40, 120, 300] {
-            let scale = size_scale(Size::Auto, Style::List, n, &[], 1280.0, 700.0);
+            let scale = size_scale(Size::Auto, Style::List, n, &[], 1280.0, 700.0, 0.0);
             let m = Metrics::at(scale);
             let tiles: Vec<Tile> = (0..n)
                 .map(|i| Tile {
@@ -1828,21 +1888,29 @@ mod tests {
         // lets the panel run off the screen.
         let wide = vec![4.0; 12];
         let nominal = vec![NOMINAL_ASPECT; 12];
-        let s_wide = size_scale(Size::Auto, Style::Gallery, 12, &wide, 1440.0, 900.0);
-        let s_nom = size_scale(Size::Auto, Style::Gallery, 12, &nominal, 1440.0, 900.0);
+        let s_wide = size_scale(Size::Auto, Style::Gallery, 12, &wide, 1440.0, 900.0, 0.0);
+        let s_nom = size_scale(Size::Auto, Style::Gallery, 12, &nominal, 1440.0, 900.0, 0.0);
         assert!(
             s_wide <= s_nom,
             "wide {s_wide} should not exceed nominal {s_nom}"
         );
-        assert!(panel_fits(Style::Gallery, 12, &wide, 1440.0, 900.0, s_wide));
+        assert!(panel_fits(
+            Style::Gallery,
+            12,
+            &wide,
+            1440.0,
+            900.0,
+            s_wide,
+            0.0
+        ));
     }
 
     #[test]
     fn a_small_screen_shrinks_a_large_size() {
         // Same window count, Large requested: the smaller screen must not get
         // the same scale as the roomy one.
-        let big = size_scale(Size::Large, Style::Gallery, 30, &[], 2560.0, 1440.0);
-        let small = size_scale(Size::Large, Style::Gallery, 30, &[], 1280.0, 800.0);
+        let big = size_scale(Size::Large, Style::Gallery, 30, &[], 2560.0, 1440.0, 0.0);
+        let small = size_scale(Size::Large, Style::Gallery, 30, &[], 1280.0, 800.0, 0.0);
         assert!(small <= big);
     }
 
@@ -1921,7 +1989,7 @@ mod tests {
                 for &n in &[1usize, 3, 8, 20, 60, 200] {
                     let s = auto_scale(style, n, sw, sh);
                     assert!(
-                        panel_fits(style, n, &[], sw, sh, s),
+                        panel_fits(style, n, &[], sw, sh, s, 0.0),
                         "auto_scale({style:?}, {n}, {sw}, {sh}) = {s} does not fit"
                     );
                     let floor = match style {
