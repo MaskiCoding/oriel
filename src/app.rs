@@ -33,8 +33,12 @@ use keys::{ActionKeys, Dir, KEY_DELETE};
 /// also needs a moment to settle after the event before it accepts one.
 /// Callers capture `Rc` and must already be on the main thread.
 /// How often the process table is swept. Each sweep measured at 1-2 ms, so a
-/// steady two-second beat is far below anything a user could feel.
-const LANTERN_TICK_MS: u64 = 2000;
+/// steady beat at the sample window is far below anything a user could feel.
+/// It is the sample window itself: the threshold is calibrated against that
+/// span, so a tick of any other length would silently change what counts as
+/// working.
+const LANTERN_TICK_MS: u64 =
+    crate::lantern::WINDOW.as_secs() * 1000 + crate::lantern::WINDOW.subsec_millis() as u64;
 
 /// Re-arms itself for the life of the process.
 fn schedule_lantern() {

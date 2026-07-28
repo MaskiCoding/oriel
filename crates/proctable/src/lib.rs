@@ -22,6 +22,8 @@ const KERN_ARGMAX: c_int = 8;
 const KERN_PROCARGS2: c_int = 49;
 const PROC_ALL_PIDS: u32 = 1;
 const PROC_PIDTASKINFO: c_int = 4;
+const PROC_PIDTHREADINFO: c_int = 5;
+const PROC_PIDLISTTHREADS: c_int = 6;
 const PROC_PIDT_SHORTBSDINFO: c_int = 13;
 const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
 
@@ -42,6 +44,23 @@ struct ShortBsdInfo {
     svuid: u32,
     svgid: u32,
     rfu: u32,
+}
+
+/// `struct proc_threadinfo` — 112 bytes. Only the two CPU totals are read.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ThreadInfo {
+    user_time: u64,
+    system_time: u64,
+    cpu_usage: i32,
+    policy: i32,
+    run_state: i32,
+    flags: i32,
+    sleep_time: i32,
+    curpri: i32,
+    priority: i32,
+    maxpriority: i32,
+    name: [u8; 64],
 }
 
 /// `struct proc_taskinfo` — 96 bytes. Only the two CPU totals are read.
@@ -119,9 +138,7 @@ pub fn table() -> Vec<Proc> {
 pub fn detail(table: &mut [Proc], wanted: &[i32]) {
     let mut scratch = vec![0u8; arg_max()];
     for proc in table.iter_mut().filter(|p| wanted.contains(&p.pid)) {
-        if let Some(task) = task_info(proc.pid) {
-            proc.cpu = Duration::from_nanos(task.total_user.saturating_add(task.total_system));
-        }
+        proc.cpu = cpu_time(proc.pid);
         if let Some(name) = arg0(proc.pid, &mut scratch).or_else(|| exec_name(proc.pid)) {
             proc.name = name;
         }
@@ -216,6 +233,63 @@ fn short_info(pid: i32) -> Option<ShortBsdInfo> {
     (wrote == size).then_some(info)
 }
 
+/// Total CPU burned by a process, live threads included.
+///
+/// The task totals alone are not that: they account only for threads that have
+/// already exited, so a process pegging a core reads as almost idle — measured,
+/// 48 ms against the 2420 ms `ps` reports for the same two seconds. A running
+/// thread's time lives in its own structure until it dies, so the live threads
+/// have to be walked and added back.
+fn cpu_time(pid: i32) -> Duration {
+    let mut total = task_info(pid).map_or(0, |t| t.total_user.saturating_add(t.total_system));
+    for tid in thread_ids(pid) {
+        if let Some(thread) = thread_info(pid, tid) {
+            total = total
+                .saturating_add(thread.user_time)
+                .saturating_add(thread.system_time);
+        }
+    }
+    Duration::from_nanos(total)
+}
+
+fn thread_ids(pid: i32) -> Vec<u64> {
+    // This flavor will not size itself from a null buffer the way `proc_listpids`
+    // does — asking returns nothing at all — so the buffer is simply generous.
+    const CAP: usize = 512;
+    let mut buf = vec![0u64; CAP];
+    let cap = CAP;
+    let wrote = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDLISTTHREADS,
+            0,
+            buf.as_mut_ptr().cast::<c_void>(),
+            (cap * size_of::<u64>()) as c_int,
+        )
+    };
+    if wrote <= 0 {
+        return Vec::new();
+    }
+    buf.truncate(wrote as usize / size_of::<u64>());
+    buf
+}
+
+fn thread_info(pid: i32, tid: u64) -> Option<ThreadInfo> {
+    // `name` is 64 bytes, past what Default derives for arrays.
+    let mut info: ThreadInfo = unsafe { core::mem::zeroed() };
+    let size = size_of::<ThreadInfo>() as c_int;
+    let wrote = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDTHREADINFO,
+            tid,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    (wrote == size).then_some(info)
+}
+
 fn task_info(pid: i32) -> Option<TaskInfo> {
     let mut info = TaskInfo::default();
     let size = size_of::<TaskInfo>() as c_int;
@@ -267,6 +341,7 @@ mod tests {
     fn layouts_match_the_kernel_headers() {
         assert_eq!(size_of::<ShortBsdInfo>(), 64);
         assert_eq!(size_of::<TaskInfo>(), 96);
+        assert_eq!(size_of::<ThreadInfo>(), 112);
     }
 
     #[test]
@@ -299,6 +374,33 @@ mod tests {
             assert!(hops < 64, "parent chain did not terminate");
         }
         assert!(hops > 0, "expected at least one ancestor");
+    }
+
+    #[test]
+    fn a_busy_process_reads_as_busy() {
+        // The task totals alone count only threads that have already exited, so
+        // this read as roughly two percent of the truth until live threads were
+        // walked and added back. Burn a known amount and insist most of it is
+        // visible, which is the shape of the bug rather than a fixed number.
+        let me = i32::try_from(std::process::id()).expect("pid fits");
+        let mut snapshot = table();
+        detail(&mut snapshot, &[me]);
+        let before = snapshot.iter().find(|p| p.pid == me).expect("own pid").cpu;
+
+        let spin = std::time::Instant::now();
+        while spin.elapsed() < Duration::from_millis(300) {
+            std::hint::black_box(0..64).for_each(drop);
+        }
+        let burned = spin.elapsed();
+
+        let mut snapshot = table();
+        detail(&mut snapshot, &[me]);
+        let after = snapshot.iter().find(|p| p.pid == me).expect("own pid").cpu;
+        let seen = after.saturating_sub(before);
+        assert!(
+            seen > burned / 2,
+            "burned {burned:?} of CPU but only {seen:?} was visible"
+        );
     }
 
     #[test]
