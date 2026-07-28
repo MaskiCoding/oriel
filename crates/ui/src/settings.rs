@@ -13,12 +13,17 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 const WIN_W: f64 = 560.0;
-const WIN_H: f64 = 640.0;
+const WIN_H: f64 = 800.0;
 const MARGIN: f64 = 20.0;
 const ROW_H: f64 = 24.0;
 const GAP: f64 = 8.0;
 const SECTION_GAP: f64 = 16.0;
 const LABEL_W: f64 = 140.0;
+/// Label width inside a half-width lens column — narrower than `LABEL_W` so it
+/// cannot run under the control in the column beside it.
+const COL_LABEL_W: f64 = 88.0;
+/// Space between the two lens columns.
+const GUTTER: f64 = 16.0;
 const CTRL_X: f64 = MARGIN + LABEL_W + 8.0;
 const CTRL_W: f64 = WIN_W - CTRL_X - MARGIN;
 
@@ -489,17 +494,20 @@ fn build_lenses(ui: &mut Ui<'_>) -> LensControls {
     let trigger = place_text_row(ui.parent, ui.mtm, "Trigger", ui.y, "", ui.target);
     ui.advance();
 
-    let col2_x = CTRL_X + CTRL_W / 2.0 + 4.0;
-    let col_w = CTRL_W / 2.0 - 4.0;
+    let content_w = WIN_W - 2.0 * MARGIN;
+    let col_span = (content_w - GUTTER) / 2.0;
+    let ctrl_w = col_span - COL_LABEL_W - 8.0;
     let left = Col {
         label_x: MARGIN,
-        ctrl_x: CTRL_X,
-        ctrl_w: col_w,
+        label_w: COL_LABEL_W,
+        ctrl_x: MARGIN + COL_LABEL_W + 8.0,
+        ctrl_w,
     };
     let right = Col {
-        label_x: col2_x - LABEL_W,
-        ctrl_x: col2_x,
-        ctrl_w: col_w,
+        label_x: MARGIN + col_span + GUTTER,
+        label_w: COL_LABEL_W,
+        ctrl_x: MARGIN + col_span + GUTTER + COL_LABEL_W + 8.0,
+        ctrl_w,
     };
 
     let apps = ui.col_popup("Apps", &left, &["all", "active", "inactive"], "all");
@@ -556,6 +564,7 @@ fn place_footer(content: &NSView, mtm: MainThreadMarker, y: f64) {
 
 struct Col {
     label_x: f64,
+    label_w: f64,
     ctrl_x: f64,
     ctrl_w: f64,
 }
@@ -667,6 +676,7 @@ fn place_popup_row(
             label,
             col: &Col {
                 label_x: MARGIN,
+                label_w: LABEL_W,
                 ctrl_x: CTRL_X,
                 ctrl_w: CTRL_W,
             },
@@ -684,7 +694,14 @@ fn place_col_popup(
     popup: &Popup<'_>,
 ) -> Retained<NSPopUpButton> {
     let top = y - ROW_H;
-    place_label(parent, mtm, popup.label, popup.col.label_x, top, LABEL_W);
+    place_label(
+        parent,
+        mtm,
+        popup.label,
+        popup.col.label_x,
+        top,
+        popup.col.label_w,
+    );
     let control = NSPopUpButton::initWithFrame_pullsDown(
         mtm.alloc(),
         NSRect::new(
