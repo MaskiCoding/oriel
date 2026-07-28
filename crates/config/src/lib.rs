@@ -367,6 +367,18 @@ theme = "dark"
     }
 
     #[test]
+    fn whitespace_only_trigger_errors() {
+        let err = parse(
+            r#"
+[[lens]]
+trigger = "   "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyTrigger));
+    }
+
+    #[test]
     fn empty_trigger_errors() {
         let err = parse(
             r#"

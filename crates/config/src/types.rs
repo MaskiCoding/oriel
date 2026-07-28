@@ -441,7 +441,9 @@ pub(crate) fn resolve_lenses(raw: &[RawLens]) -> Result<Vec<ResolvedLens>, Confi
     }
 
     for lens in raw {
-        if lens.trigger.is_empty() {
+        // Whitespace-only is just as unusable as empty, and would otherwise
+        // round-trip into a lens that can never register.
+        if lens.trigger.trim().is_empty() {
             return Err(ConfigError::EmptyTrigger);
         }
     }

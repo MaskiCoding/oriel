@@ -154,12 +154,14 @@ impl SettingsController {
         if idx >= cfg.lenses.len() {
             return;
         }
-        let trigger = w.lens_trigger.stringValue().to_string();
-        if trigger.is_empty() {
-            return;
-        }
+        // A blank field must not discard the rest of the lens edit — keep the
+        // previous trigger and apply everything else.
+        let typed = w.lens_trigger.stringValue().to_string();
+        let trigger = typed.trim();
         let lens = &mut cfg.lenses[idx];
-        lens.trigger = trigger;
+        if !trigger.is_empty() {
+            trigger.clone_into(&mut lens.trigger);
+        }
         lens.apps = popup_apps(&w.lens_apps);
         lens.order = popup_order(&w.lens_order);
         lens.style = popup_style(&w.lens_style);
