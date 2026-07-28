@@ -5,7 +5,7 @@ mod peek;
 mod settings;
 mod strip;
 
-pub use look::{Look, ShowOn, Size, Style, Theme};
+pub use look::{Look, ShowOn, Size, Style, Theme, TitleShow, TitleTruncate};
 pub use peek::Peek;
 pub use settings::Settings;
 pub use strip::{Strip, Tile};
