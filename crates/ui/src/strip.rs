@@ -89,8 +89,18 @@ const MIN_W: f64 = 110.0;
 const MAX_W: f64 = 360.0;
 const GAP: f64 = 14.0;
 const PAD: f64 = 24.0;
-/// The fallback app icon size when a tile has no preview.
+/// The fallback app icon size when a Gallery tile has no preview.
 const ICON: f64 = 64.0;
+/// Icons-style app icon at Medium — the icon is the tile's content.
+const ICONS_ICON: f64 = 112.0;
+/// Gap between the Icons-style icon and its title.
+const ICONS_GAP: f64 = 6.0;
+/// Vertical padding inside a List row beyond icon/title.
+const LIST_PAD_Y: f64 = 4.0;
+/// Gap between List rows — menu-dense, not Gallery's tile gap.
+const LIST_GAP: f64 = 2.0;
+const LIST_MIN_W: f64 = 160.0;
+const LIST_MAX_W: f64 = 360.0;
 /// How full a row aims to be, as a share of the hard width limit — the strip
 /// prefers growing down over stretching one row across the screen.
 const ROW_FILL: f64 = 0.8;
@@ -116,17 +126,25 @@ fn as_f64(n: usize) -> f64 {
 /// Tile metrics at a given scale. Scale 1.0 matches the Medium Gallery constants.
 #[derive(Clone, Copy)]
 struct Metrics {
+    scale: f64,
     preview_h: f64,
     caption_h: f64,
     icon: f64,
+    icons_icon: f64,
     min_w: f64,
     max_w: f64,
     gap: f64,
+    list_gap: f64,
+    list_pad_y: f64,
+    /// Panel chrome for List — scales freely so a long column can still fit.
+    list_pad: f64,
     pad: f64,
     inset: f64,
     title_font: f64,
     badge_font: f64,
     caption_icon: f64,
+    list_min_w: f64,
+    list_max_w: f64,
     query_h: f64,
     query_font: f64,
 }
@@ -135,17 +153,26 @@ impl Metrics {
     fn at(scale: f64) -> Self {
         let s = scale;
         Self {
+            scale: s,
             preview_h: PREVIEW_H * s,
             caption_h: CAPTION_H * s,
             icon: ICON * s,
+            icons_icon: ICONS_ICON * s,
             min_w: MIN_W * s,
             max_w: MAX_W * s,
             gap: (GAP * s).max(6.0),
+            // List densifies without the Gallery readability floors — Auto must
+            // still keep a long column on one screen.
+            list_gap: LIST_GAP * s,
+            list_pad_y: LIST_PAD_Y * s,
+            list_pad: PAD * s,
             pad: (PAD * s).max(10.0),
             inset: (INSET * s).max(3.0),
             title_font: (12.0 * s).clamp(10.0, 14.0),
             badge_font: (11.0 * s).clamp(9.0, 13.0),
             caption_icon: (16.0 * s).clamp(12.0, 20.0),
+            list_min_w: (LIST_MIN_W * s).max(80.0),
+            list_max_w: LIST_MAX_W * s,
             query_h: (QUERY_H * s).clamp(20.0, 34.0),
             query_font: (13.0 * s).clamp(11.0, 16.0),
         }
@@ -155,16 +182,18 @@ impl Metrics {
         self.inset + self.preview_h + 4.0 + self.caption_h + 4.0
     }
 
-    fn icons_side(&self) -> f64 {
-        self.icon + 6.0 + self.caption_h + 2.0 * self.inset
+    fn icons_tile_w(&self) -> f64 {
+        self.icons_icon + 2.0 * self.inset
+    }
+
+    fn icons_tile_h(&self) -> f64 {
+        self.icons_icon + ICONS_GAP + self.caption_h + 2.0 * self.inset
     }
 
     fn list_row_h(&self) -> f64 {
-        self.caption_icon.max(self.caption_h) + 2.0 * self.inset
-    }
-
-    fn list_width(&self) -> f64 {
-        (280.0 * self.preview_h / PREVIEW_H).clamp(160.0, 400.0)
+        let icon = 16.0 * self.scale;
+        let line = 12.0 * self.scale + 5.0 * self.scale;
+        icon.max(line) + 2.0 * self.list_pad_y
     }
 
     /// Extra panel height when the filter query row is visible (row + gap).
@@ -173,54 +202,131 @@ impl Metrics {
     }
 }
 
-fn size_scale(size: Size, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
+fn size_scale(size: Size, style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
     match size {
         Size::Small => SCALE_SMALL,
         Size::Medium => SCALE_MEDIUM,
         Size::Large => SCALE_LARGE,
-        Size::Auto => auto_scale(tiles, screen_w, screen_h),
+        Size::Auto => auto_scale(style, tiles, screen_w, screen_h),
     }
 }
 
-/// Picks a Gallery scale so every tile fits on one screen. More windows never
-/// yield a larger scale; the floor keeps a huge session readable instead of
-/// collapsing to zero.
-fn auto_scale(tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
+/// Picks a scale so every tile fits on one screen for the active style. More
+/// windows never yield a larger scale; the floor keeps a huge session readable
+/// instead of collapsing to zero.
+fn auto_scale(style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
     if tiles == 0 || screen_w <= 0.0 || screen_h <= 0.0 {
         return SCALE_MEDIUM;
     }
-    let candidates = [
-        SCALE_LARGE,
-        1.2,
-        1.1,
-        SCALE_MEDIUM,
-        0.9,
-        0.8,
-        SCALE_SMALL,
-        0.6,
-        0.5,
-        0.4,
-        0.3,
-        SCALE_FLOOR,
-    ];
-    for &scale in &candidates {
-        if panel_fits(tiles, screen_w, screen_h, scale) {
+    // List is a single column — densify below the shared floor when needed.
+    let candidates: &[f64] = match style {
+        Style::List => &[
+            SCALE_LARGE,
+            1.2,
+            1.1,
+            SCALE_MEDIUM,
+            0.9,
+            0.8,
+            SCALE_SMALL,
+            0.6,
+            0.5,
+            0.4,
+            0.3,
+            SCALE_FLOOR,
+            0.15,
+            0.1,
+            0.075,
+            0.05,
+        ],
+        Style::Gallery | Style::Icons => &[
+            SCALE_LARGE,
+            1.2,
+            1.1,
+            SCALE_MEDIUM,
+            0.9,
+            0.8,
+            SCALE_SMALL,
+            0.6,
+            0.5,
+            0.4,
+            0.3,
+            SCALE_FLOOR,
+        ],
+    };
+    for &scale in candidates {
+        if panel_fits(style, tiles, screen_w, screen_h, scale) {
             return scale;
         }
     }
-    SCALE_FLOOR
+    match style {
+        Style::List => 0.05,
+        Style::Gallery | Style::Icons => SCALE_FLOOR,
+    }
 }
 
 fn gallery_tile_width(aspect: f64, m: &Metrics) -> f64 {
     (aspect * m.preview_h).clamp(m.min_w, m.max_w) + 2.0 * m.inset
 }
 
-fn panel_fits(tiles: usize, screen_w: f64, screen_h: f64, scale: f64) -> bool {
+/// Approximate system-font label width without `AppKit` — enough to size the
+/// List column from its longest title.
+fn text_width(text: &str, font_size: f64) -> f64 {
+    as_f64(text.chars().count()) * font_size * 0.62
+}
+
+fn tile_label(tile: &Tile) -> &str {
+    if tile.title.is_empty() {
+        tile.app.as_str()
+    } else {
+        tile.title.as_str()
+    }
+}
+
+fn list_content_width(tiles: &[Tile], m: &Metrics) -> f64 {
+    let mut max_title: f64 = 48.0;
+    let mut max_badge: f64 = 0.0;
+    for tile in tiles {
+        max_title = max_title.max(text_width(tile_label(tile), m.title_font));
+        if !tile.badge.is_empty() {
+            max_badge = max_badge.max(text_width(&tile.badge, m.badge_font));
+        }
+    }
+    let icon_slot = m.caption_icon + 6.0;
+    let badge_slot = if max_badge > 0.0 {
+        max_badge + 6.0
+    } else {
+        0.0
+    };
+    (2.0 * m.inset + icon_slot + max_title + badge_slot).clamp(m.list_min_w, m.list_max_w)
+}
+
+fn panel_fits(style: Style, tiles: usize, screen_w: f64, screen_h: f64, scale: f64) -> bool {
     let m = Metrics::at(scale);
-    let tw = gallery_tile_width(1.5, &m);
-    let widths = vec![tw; tiles];
-    let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
-    let plan = layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad, 0.0);
+    let plan = match style {
+        Style::Gallery => {
+            let tw = gallery_tile_width(1.5, &m);
+            let widths = vec![tw; tiles];
+            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
+            layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad, 0.0)
+        }
+        Style::Icons => {
+            let tw = m.icons_tile_w();
+            let widths = vec![tw; tiles];
+            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(tw);
+            layout_sized(&widths, max_content, m.icons_tile_h(), m.gap, m.pad, 0.0)
+        }
+        Style::List => {
+            // Worst-case column width — titles aren't known at auto-scale time.
+            list_layout(
+                tiles,
+                m.list_max_w,
+                m.list_row_h(),
+                m.list_gap,
+                m.list_pad,
+                0.0,
+            )
+        }
+    };
     plan.width <= screen_w && plan.height <= screen_h
 }
 
@@ -329,17 +435,24 @@ fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64, query_space: f
             )
         }
         Style::Icons => {
-            let side = m.icons_side();
-            let widths = vec![side; tiles.len()];
-            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(side);
-            layout_sized(&widths, max_content, side, m.gap, m.pad, query_space)
+            let tw = m.icons_tile_w();
+            let widths = vec![tw; tiles.len()];
+            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(tw);
+            layout_sized(
+                &widths,
+                max_content,
+                m.icons_tile_h(),
+                m.gap,
+                m.pad,
+                query_space,
+            )
         }
         Style::List => list_layout(
             tiles.len(),
-            m.list_width(),
+            list_content_width(tiles, m),
             m.list_row_h(),
-            m.gap,
-            m.pad,
+            m.list_gap,
+            m.list_pad,
             query_space,
         ),
     }
@@ -497,6 +610,8 @@ pub struct Strip {
     dark: Cell<bool>,
     /// Scale last applied by `show`, so `update_tile` rebuilds at the same size.
     scale: Cell<f64>,
+    /// List column width last planned by `show` (content-driven).
+    list_w: Cell<f64>,
     /// `None` hides the query row; `Some` shows it with that text (may be empty).
     query: RefCell<Option<String>>,
     query_label: RefCell<Option<Retained<NSTextField>>>,
@@ -546,6 +661,7 @@ impl Strip {
             look: Cell::new(Look::default()),
             dark: Cell::new(true),
             scale: Cell::new(SCALE_MEDIUM),
+            list_w: Cell::new(LIST_MIN_W),
             query: RefCell::new(None),
             query_label: RefCell::new(None),
             query_caret: RefCell::new(None),
@@ -615,7 +731,7 @@ impl Strip {
             None => (1440.0, 900.0, None),
         };
 
-        let scale = size_scale(look.size, tiles.len(), screen_w, screen_h);
+        let scale = size_scale(look.size, look.style, tiles.len(), screen_w, screen_h);
         self.scale.set(scale);
         let m = Metrics::at(scale);
         let dark = theme_is_dark(look.theme);
@@ -628,6 +744,9 @@ impl Strip {
             0.0
         };
         self.query_space.set(query_space);
+        if look.style == Style::List {
+            self.list_w.set(list_content_width(tiles, &m));
+        }
         let plan = plan(tiles, look.style, &m, screen_w, query_space);
         self.panel
             .setContentSize(NSSize::new(plan.width, plan.height));
@@ -804,10 +923,11 @@ impl Strip {
         view
     }
 
-    /// Icons: large app icon with the title beneath; uniform square-ish tile.
+    /// Icons: large app icon with the title beneath; uniform content-hugging tile.
     fn icons_tile(&self, tile: &Tile, m: &Metrics, dark: bool) -> Retained<NSView> {
-        let side = m.icons_side();
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(side, side));
+        let width = m.icons_tile_w();
+        let height = m.icons_tile_h();
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
         let view = NSView::initWithFrame(self.mtm.alloc(), frame);
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
@@ -815,24 +935,25 @@ impl Strip {
             layer.setMasksToBounds(true);
         }
 
+        let icon_s = m.icons_icon;
         if let Some(icon) = app_icon(tile.pid) {
             let image = NSImageView::new(self.mtm);
             image.setImage(Some(&icon));
-            let icon_y = m.inset + m.caption_h + 6.0;
+            let icon_y = m.inset + m.caption_h + ICONS_GAP;
             image.setFrame(NSRect::new(
-                NSPoint::new((side - m.icon) / 2.0, icon_y),
-                NSSize::new(m.icon, m.icon),
+                NSPoint::new((width - icon_s) / 2.0, icon_y),
+                NSSize::new(icon_s, icon_s),
             ));
             view.addSubview(&image);
         }
 
-        self.caption_row(&view, tile, side, m.inset, m.caption_h, m, dark, false);
+        self.caption_row(&view, tile, width, m.inset, m.caption_h, m, dark, false);
         view
     }
 
     /// List: dense row — small icon, title, markers right-aligned.
     fn list_tile(&self, tile: &Tile, m: &Metrics, dark: bool) -> Retained<NSView> {
-        let width = m.list_width();
+        let width = self.list_w.get();
         let height = m.list_row_h();
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
         let view = NSView::initWithFrame(self.mtm.alloc(), frame);
@@ -842,8 +963,9 @@ impl Strip {
             layer.setMasksToBounds(true);
         }
 
-        let band = height - 2.0 * m.inset;
-        self.caption_row(&view, tile, width, m.inset, band, m, dark, true);
+        let pad_y = m.list_pad_y;
+        let band = height - 2.0 * pad_y;
+        self.caption_row(&view, tile, width, pad_y, band, m, dark, true);
         view
     }
 
@@ -1121,6 +1243,7 @@ mod tests {
         assert_eq!(m.preview_h, PREVIEW_H);
         assert_eq!(m.caption_h, CAPTION_H);
         assert_eq!(m.icon, ICON);
+        assert_eq!(m.icons_icon, ICONS_ICON);
         assert_eq!(m.min_w, MIN_W);
         assert_eq!(m.max_w, MAX_W);
         assert_eq!(m.gap, GAP);
@@ -1130,31 +1253,82 @@ mod tests {
     }
 
     #[test]
+    fn icons_tile_hugs_large_icon() {
+        let m = Metrics::at(SCALE_MEDIUM);
+        assert!((96.0..129.0).contains(&m.icons_icon));
+        assert_eq!(m.icons_tile_w(), m.icons_icon + 2.0 * m.inset);
+        assert_eq!(
+            m.icons_tile_h(),
+            m.icons_icon + ICONS_GAP + m.caption_h + 2.0 * m.inset
+        );
+        // Uniform grid: width follows the icon, not Gallery's preview box.
+        assert!(m.icons_tile_w() < m.gallery_tile_h());
+        assert!(m.icons_tile_w() < gallery_tile_width(1.5, &m));
+    }
+
+    #[test]
+    fn list_rows_are_dense() {
+        let m = Metrics::at(SCALE_MEDIUM);
+        let row = m.list_row_h();
+        // Menu pitch — not Gallery tile height, not the old inset*2 padding.
+        assert!(row < 40.0);
+        assert!(row < m.caption_h + 2.0 * m.inset);
+        assert_eq!(m.list_gap, LIST_GAP);
+        let tiles = [
+            Tile {
+                title: "Short".into(),
+                ..Tile::default()
+            },
+            Tile {
+                title: "A rather longer window title here".into(),
+                badge: "●".into(),
+                ..Tile::default()
+            },
+        ];
+        let short = list_content_width(&tiles[..1], &m);
+        let long = list_content_width(&tiles, &m);
+        assert!(long > short);
+        assert!(long <= m.list_max_w);
+        assert!(short >= m.list_min_w);
+        let plan = list_layout(9, long, row, m.list_gap, m.list_pad, 0.0);
+        // Nine dense rows fit a laptop-height screen with room to spare.
+        assert!(plan.height < 900.0);
+    }
+
+    #[test]
     fn auto_scale_is_monotone_nonincreasing() {
-        for &(sw, sh) in &[(1440.0, 900.0), (2560.0, 1440.0), (1280.0, 800.0)] {
-            let mut prev = f64::MAX;
-            for &n in &[1usize, 3, 8, 20, 60, 200] {
-                let s = auto_scale(n, sw, sh);
-                assert!(
-                    s <= prev,
-                    "scale rose with more tiles: n={n} {s} > {prev} on {sw}x{sh}"
-                );
-                prev = s;
+        for style in [Style::Gallery, Style::Icons, Style::List] {
+            for &(sw, sh) in &[(1440.0, 900.0), (2560.0, 1440.0), (1280.0, 800.0)] {
+                let mut prev = f64::MAX;
+                for &n in &[1usize, 3, 8, 20, 60, 200] {
+                    let s = auto_scale(style, n, sw, sh);
+                    assert!(
+                        s <= prev,
+                        "scale rose with more tiles: {style:?} n={n} {s} > {prev} on {sw}x{sh}"
+                    );
+                    prev = s;
+                }
             }
         }
     }
 
     #[test]
     fn auto_scale_panel_fits_screen() {
-        for &(sw, sh) in &[(1440.0, 900.0), (2560.0, 1440.0)] {
-            for &n in &[1usize, 3, 8, 20, 60, 200] {
-                let s = auto_scale(n, sw, sh);
-                assert!(
-                    panel_fits(n, sw, sh, s),
-                    "auto_scale({n}, {sw}, {sh}) = {s} does not fit"
-                );
-                assert!(s >= SCALE_FLOOR);
-                assert!(s <= SCALE_LARGE);
+        for style in [Style::Gallery, Style::Icons, Style::List] {
+            for &(sw, sh) in &[(1440.0, 900.0), (2560.0, 1440.0)] {
+                for &n in &[1usize, 3, 8, 20, 60, 200] {
+                    let s = auto_scale(style, n, sw, sh);
+                    assert!(
+                        panel_fits(style, n, sw, sh, s),
+                        "auto_scale({style:?}, {n}, {sw}, {sh}) = {s} does not fit"
+                    );
+                    let floor = match style {
+                        Style::List => 0.05,
+                        Style::Gallery | Style::Icons => SCALE_FLOOR,
+                    };
+                    assert!(s >= floor);
+                    assert!(s <= SCALE_LARGE);
+                }
             }
         }
     }
