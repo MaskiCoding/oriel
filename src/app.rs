@@ -566,17 +566,56 @@ impl App {
             .is_some_and(|b| lens::stays_open(b.on_release))
     }
 
+    /// A tile was clicked: select it and jump, exactly as Return would.
+    fn click_tile(&mut self, index: usize) {
+        if !self.select_index(index) {
+            return;
+        }
+        self.jump();
+    }
+
+    /// Scroll steps the selection the way Tab and Shift-Tab do.
+    fn scroll_selection(&mut self, delta: i32) {
+        if self.session.is_none() || delta == 0 {
+            return;
+        }
+        if let Some(live) = &mut self.session {
+            live.selection.cycle(delta < 0);
+            let next = live.selection.selected();
+            self.strip.select(next);
+        }
+        self.request_peek();
+    }
+
+    /// Hover moves the selection without ever committing to a jump.
+    fn hover_tile(&mut self, index: usize) {
+        if self.select_index(index) {
+            self.request_peek();
+        }
+    }
+
+    /// Moves the selection to `index` when a session is open and it is in
+    /// range. `false` means the event was stale and should be ignored.
+    fn select_index(&mut self, index: usize) -> bool {
+        let Some(live) = &mut self.session else {
+            return false;
+        };
+        if index >= live.candidates.len() {
+            return false;
+        }
+        live.selection.select(index);
+        self.strip.select(index);
+        true
+    }
+
     fn move_sel(&mut self, dir: Dir) {
         let Some(live) = &self.session else {
             return;
         };
         let n = live.candidates.len();
         let selected = live.selection.selected();
-        let style = self
-            .binding(live.binding_idx)
-            .map_or(ui::Style::Gallery, |b| b.look.style);
-        let cols = keys::grid_cols(n, style);
-        let next = keys::step(selected, n, cols, dir);
+        let rows = self.strip.rows();
+        let next = keys::step_rows(selected, n, &rows, dir);
         if let Some(live) = &mut self.session {
             live.selection.select(next);
         }
@@ -1277,6 +1316,32 @@ fn install_activation_observer(app: &Rc<RefCell<App>>) -> ActivationHook {
     }
 }
 
+/// Mouse in the strip: click focuses, scroll moves the selection, hover
+/// selects when the config asks for it. Each callback re-enters `App`, so none
+/// of them may hold a borrow while calling in.
+fn install_mouse(app: &Rc<RefCell<App>>) {
+    let a = app.borrow();
+    a.strip.on_click(|index| {
+        if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+            app.borrow_mut().click_tile(index);
+        }
+    });
+    a.strip.on_scroll(|delta| {
+        if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+            app.borrow_mut().scroll_selection(delta);
+        }
+    });
+    let hover = a.controls.hover_select;
+    a.strip.set_hover_select(hover);
+    if hover {
+        a.strip.on_hover(|index| {
+            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                app.borrow_mut().hover_tile(index);
+            }
+        });
+    }
+}
+
 fn boot_triggers(app: &Rc<RefCell<App>>, want_menubar: bool) -> bool {
     let mut a = app.borrow_mut();
     if want_menubar {
@@ -1353,6 +1418,7 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
     APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
     spawn_capture(&app);
     spawn_peek_capture(&app);
+    install_mouse(&app);
 
     if !boot_triggers(&app, cfg.menubar_icon) {
         return;
