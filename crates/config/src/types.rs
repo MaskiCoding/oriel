@@ -435,6 +435,11 @@ impl Default for RawConfig {
     }
 }
 
+/// PRD §4.6 documents the apparition delay as 0–900 ms. The loop clamps too,
+/// but clamping here means the value the settings window reads back and writes
+/// is the value actually in force.
+pub(crate) const MAX_SUMMON_DELAY_MS: u32 = 900;
+
 pub(crate) fn resolve_lenses(raw: &[RawLens]) -> Result<Vec<ResolvedLens>, ConfigError> {
     if raw.is_empty() {
         return Ok(default_lenses());

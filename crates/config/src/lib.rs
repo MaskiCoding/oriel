@@ -56,7 +56,7 @@ pub fn parse(toml: &str) -> Result<Config, ConfigError> {
     let raw: RawConfig = toml::from_str(toml)?;
     let lenses = resolve_lenses(&raw.lenses)?;
     Ok(Config {
-        summon_delay_ms: raw.summon_delay_ms,
+        summon_delay_ms: raw.summon_delay_ms.min(types::MAX_SUMMON_DELAY_MS),
         theme: raw.theme,
         show_on: raw.show_on,
         background_capture: raw.background_capture,
@@ -269,6 +269,53 @@ markers = true
         assert!(cfg.titles.markers);
     }
 
+    /// Inheritance is "from the first lens", not "from the previous one" — a
+    /// third lens must still take lens 1's values, not lens 2's.
+    #[test]
+    fn every_later_lens_inherits_from_the_first() {
+        let toml = r#"
+[[lens]]
+trigger = "cmd+tab"
+order = "alphabetical"
+style = "list"
+
+[[lens]]
+trigger = "alt+tab"
+style = "icons"
+
+[[lens]]
+trigger = "ctrl+tab"
+
+[[lens]]
+trigger = "cmd+grave"
+order = "created"
+"#;
+        let cfg = parse(toml).unwrap();
+        assert_eq!(cfg.lenses.len(), 4);
+        // Third lens sets nothing: everything comes from lens 1, not lens 2.
+        assert_eq!(cfg.lenses[2].style, Style::List);
+        assert_eq!(cfg.lenses[2].order, Order::Alphabetical);
+        // Second lens's own override does not leak forward.
+        assert_eq!(cfg.lenses[1].style, Style::Icons);
+        assert_eq!(cfg.lenses[3].style, Style::List);
+        assert_eq!(cfg.lenses[3].order, Order::Created);
+    }
+
+    #[test]
+    fn an_empty_trigger_on_a_later_lens_still_errors() {
+        let err = parse(
+            r#"
+[[lens]]
+trigger = "cmd+tab"
+
+[[lens]]
+trigger = ""
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyTrigger));
+    }
+
     #[test]
     fn second_lens_inherits_from_first() {
         let toml = r#"
@@ -364,6 +411,18 @@ theme = "dark"
         assert_eq!(cfg.summon_delay_ms, 10);
         assert_eq!(cfg.theme, Theme::Dark);
         assert_eq!(cfg.lenses, default_lenses());
+    }
+
+    #[test]
+    fn summon_delay_is_clamped_to_the_documented_range() {
+        assert_eq!(
+            parse("summon_delay_ms = 5000\n").unwrap().summon_delay_ms,
+            900
+        );
+        assert_eq!(
+            parse("summon_delay_ms = 250\n").unwrap().summon_delay_ms,
+            250
+        );
     }
 
     #[test]
