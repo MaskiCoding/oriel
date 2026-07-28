@@ -265,6 +265,9 @@ fn strip_demo(style: ui::Style, query: Option<&str>) {
     shown.retain(|w| w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable());
     shown.truncate(9);
     ws.fill_titles(&mut shown);
+    // ORIEL_LANTERN=1 lights the first tile so the working-window look can be
+    // judged without an agent actually running.
+    let demo_lantern = std::env::var("ORIEL_LANTERN").is_ok();
     let tiles: Vec<ui::Tile> = shown
         .into_iter()
         .map(|w| {
@@ -282,6 +285,14 @@ fn strip_demo(style: ui::Style, query: Option<&str>) {
                 title: w.title.unwrap_or_default(),
                 ..ui::Tile::default()
             }
+        })
+        .collect();
+    let tiles: Vec<ui::Tile> = tiles
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| ui::Tile {
+            lantern: demo_lantern && i % 2 == 0,
+            ..t
         })
         .collect();
 

@@ -717,12 +717,20 @@ fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
     let border = if on {
         Some(NSColor::controlAccentColor().CGColor())
     } else if lit {
-        Some(lantern_color().CGColor())
+        // A pale shell edge, not the accent ring — the drift already says the
+        // window is working, so the border only has to close the shape.
+        Some(NSColor::colorWithSRGBRed_green_blue_alpha(0.96, 0.94, 0.98, 0.30).CGColor())
     } else {
         None
     };
     layer.setBorderColor(border.as_deref());
-    layer.setBorderWidth(if on || lit { 2.5 } else { 0.0 });
+    layer.setBorderWidth(if on {
+        2.5
+    } else if lit {
+        1.0
+    } else {
+        0.0
+    });
 
     let backing = if lit {
         // Light through a pane: strong enough to carry across the strip,
@@ -768,9 +776,27 @@ fn mouse_location() -> NSPoint {
     unsafe { msg_send![class!(NSEvent), mouseLocation] }
 }
 
+/// The vibrancy material. `ORIEL_MATERIAL` overrides it while a look is being
+/// chosen; the default is what ships.
+fn material_for(dark: bool) -> NSVisualEffectMaterial {
+    match std::env::var("ORIEL_MATERIAL").unwrap_or_default().as_str() {
+        "hud" => NSVisualEffectMaterial::HUDWindow,
+        "menu" => NSVisualEffectMaterial::Menu,
+        "popover" => NSVisualEffectMaterial::Popover,
+        "sidebar" => NSVisualEffectMaterial::Sidebar,
+        "under" => NSVisualEffectMaterial::UnderWindowBackground,
+        "header" => NSVisualEffectMaterial::HeaderView,
+        "sheet" => NSVisualEffectMaterial::Sheet,
+        "window" => NSVisualEffectMaterial::WindowBackground,
+        _ if dark => NSVisualEffectMaterial::Menu,
+        _ => NSVisualEffectMaterial::Popover,
+    }
+}
+
 /// `CoreAnimation` wants gradient stops as boxed numbers.
-fn stops(a: f64, b: f64, c: f64) -> Vec<Retained<NSNumber>> {
-    [a, b, c].iter().map(|v| NSNumber::new_f64(*v)).collect()
+fn stops(values: &[f64]) -> Retained<NSArray<NSNumber>> {
+    let boxed: Vec<Retained<NSNumber>> = values.iter().map(|v| NSNumber::new_f64(*v)).collect();
+    NSArray::from_retained_slice(&boxed)
 }
 
 fn system_appearance_is_dark() -> bool {
@@ -1115,7 +1141,7 @@ impl Strip {
         // behind it the way the Dock does. Added before any tile so it stays at
         // the bottom, and sized with the view so a re-plan cannot leave a seam.
         let glass = NSVisualEffectView::new(mtm);
-        glass.setMaterial(NSVisualEffectMaterial::HUDWindow);
+        glass.setMaterial(material_for(true));
         glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
         glass.setState(NSVisualEffectState::Active);
         glass.setFrame(content.bounds());
@@ -1402,17 +1428,13 @@ impl Strip {
     fn apply_theme(&self, dark: bool) {
         if let Some(layer) = self.content.layer() {
             let edge = if dark {
-                NSColor::colorWithWhite_alpha(1.0, 0.16)
+                NSColor::colorWithWhite_alpha(1.0, 0.28)
             } else {
-                NSColor::colorWithWhite_alpha(0.0, 0.12)
+                NSColor::colorWithWhite_alpha(0.0, 0.18)
             };
             layer.setBorderColor(Some(&edge.CGColor()));
         }
-        self.glass.setMaterial(if dark {
-            NSVisualEffectMaterial::HUDWindow
-        } else {
-            NSVisualEffectMaterial::Popover
-        });
+        self.glass.setMaterial(material_for(dark));
     }
 
     fn target_screen(&self, show_on: ShowOn) -> Option<Retained<NSScreen>> {
@@ -1488,14 +1510,18 @@ impl Strip {
         let gradient = CAGradientLayer::new();
         gradient.setFrame(bounds);
 
-        // `colors` holds CGColorRefs, which are CoreFoundation rather than
-        // ObjC, so the array is filled by hand rather than through NSArray's
-        // typed constructor.
-        let warm = NSColor::colorWithSRGBRed_green_blue_alpha(0.98, 0.74, 0.58, 0.15);
-        let rose = lantern_color().colorWithAlphaComponent(0.17);
-        let pale = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.98, 0.94, 0.02);
+        // Pearlescent rather than tinted: pale shell colours that shift as they
+        // drift, so the tile looks iridescent instead of stained. Each stop is
+        // faint on its own — the effect is in the movement between them.
         let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
-        for color in [warm, rose, pale] {
+        for (r, g, b, a) in [
+            (0.98, 0.97, 0.90, 0.10),
+            (0.88, 0.94, 0.97, 0.13),
+            (0.94, 0.90, 0.98, 0.12),
+            (0.99, 0.93, 0.94, 0.11),
+            (0.92, 0.97, 0.94, 0.09),
+        ] {
+            let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a);
             let cg = color.CGColor();
             let ptr: *const AnyObject = (&raw const *cg).cast();
             let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
@@ -1505,19 +1531,19 @@ impl Strip {
             let _: () = msg_send![&*gradient, setStartPoint: NSPoint::new(0.0, 1.0)];
             let _: () = msg_send![&*gradient, setEndPoint: NSPoint::new(1.0, 0.0)];
         }
-        gradient.setLocations(Some(&NSArray::from_retained_slice(&stops(0.0, 0.45, 1.0))));
+        gradient.setLocations(Some(&stops(&[0.0, 0.25, 0.5, 0.75, 1.0])));
 
         let drift = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("locations")));
         // SAFETY: both values are gradient-stop arrays, which is what the
         // `locations` key path expects.
         unsafe {
-            drift.setFromValue(Some(&NSArray::from_retained_slice(&stops(-0.7, 0.0, 0.6))));
-            drift.setToValue(Some(&NSArray::from_retained_slice(&stops(0.4, 1.0, 1.7))));
+            drift.setFromValue(Some(&stops(&[-0.9, -0.5, -0.1, 0.3, 0.7])));
+            drift.setToValue(Some(&stops(&[0.3, 0.7, 1.1, 1.5, 1.9])));
+            drift.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+                &NSString::from_str("easeInEaseOut"),
+            )));
         }
-        drift.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
-            &NSString::from_str("easeInEaseOut"),
-        )));
-        drift.setDuration(5.5);
+        drift.setDuration(9.0);
         drift.setAutoreverses(true);
         drift.setRepeatCount(f32::INFINITY);
         gradient.addAnimation_forKey(&drift, Some(&NSString::from_str("lantern")));
