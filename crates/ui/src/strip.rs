@@ -793,6 +793,95 @@ fn material_for(dark: bool) -> NSVisualEffectMaterial {
     }
 }
 
+/// One field of the lantern: a soft ellipse of colour that drifts across the
+/// tile. Sized so its brighter middle lands on the preview — close enough to
+/// have presence rather than being a flat wash — and turned to its own angle,
+/// because a circle announces itself as light thrown onto the window from
+/// somewhere else. Anchored away from the centre too: concentric fields look
+/// emitted from the middle of the window rather than sitting on it.
+struct Field {
+    rgb: (f64, f64, f64),
+    alpha: f64,
+    size: f64,
+    /// Width over height. Anything but 1.0 turns the circle into an ellipse.
+    stretch: f64,
+    tilt: f64,
+    /// How far it travels, as a fraction of the tile's longest edge.
+    sway: f64,
+    /// Seconds for a full x and y traverse. Deliberately unequal and sharing no
+    /// common factor, so the two never resynchronise and the path stays open
+    /// instead of retracing a loop.
+    periods: (f64, f64),
+    anchor: (f64, f64),
+}
+
+/// Four is enough to keep the colour recombining without any one dominating.
+const LANTERN_FIELDS: [Field; 4] = [
+    Field {
+        rgb: (0.30, 0.74, 1.00),
+        alpha: 0.17,
+        size: 1.35,
+        stretch: 1.8,
+        tilt: 0.40,
+        sway: 0.20,
+        periods: (13.0, 17.0),
+        anchor: (-0.26, 0.18),
+    },
+    Field {
+        rgb: (0.58, 0.42, 1.00),
+        alpha: 0.15,
+        size: 1.55,
+        stretch: 1.5,
+        tilt: -0.70,
+        sway: 0.22,
+        periods: (19.0, 11.0),
+        anchor: (0.30, -0.14),
+    },
+    Field {
+        rgb: (0.34, 1.00, 0.78),
+        alpha: 0.13,
+        size: 1.25,
+        stretch: 2.1,
+        tilt: 1.10,
+        sway: 0.18,
+        periods: (23.0, 15.0),
+        anchor: (0.14, 0.28),
+    },
+    Field {
+        rgb: (1.00, 0.48, 0.72),
+        alpha: 0.12,
+        size: 1.45,
+        stretch: 1.6,
+        tilt: -0.30,
+        sway: 0.21,
+        periods: (16.0, 21.0),
+        anchor: (-0.18, -0.24),
+    },
+];
+
+/// Long enough to read as ebbing rather than blinking, short enough that the
+/// strip is not still settling by the time it is dismissed.
+const LANTERN_FADE: f64 = 0.55;
+
+/// Animates a view's opacity without waiting on a completion callback.
+fn fade_view(view: &NSView, to: f64, seconds: f64) {
+    let Some(layer) = view.layer() else {
+        view.setAlphaValue(to);
+        return;
+    };
+    let from = f64::from(layer.opacity());
+    let anim = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
+    // SAFETY: the `opacity` key path takes a plain number.
+    unsafe {
+        anim.setFromValue(Some(&NSNumber::new_f64(from)));
+        anim.setToValue(Some(&NSNumber::new_f64(to)));
+    }
+    anim.setDuration(seconds);
+    layer.addAnimation_forKey(&anim, Some(&NSString::from_str("fade")));
+    #[allow(clippy::cast_possible_truncation)]
+    layer.setOpacity(to as f32);
+}
+
 /// A stable number per window, so its lantern always drifts on its own phase.
 /// Two windows of one app must not share it, so the title contributes too.
 fn drift_seed(tile: &Tile) -> u64 {
@@ -1094,6 +1183,10 @@ pub struct Strip {
     /// Which tiles are lit, parallel to `tiles` — `select` restyles from views
     /// alone and still needs to know not to wipe the light.
     lit: RefCell<Vec<bool>>,
+    /// The lantern overlay per tile, kept so it can be faded rather than
+    /// rebuilt, and the window's drift seed so it can be built on demand.
+    lanterns: RefCell<Vec<Option<Retained<NSView>>>>,
+    seeds: RefCell<Vec<u64>>,
     look: Cell<Look>,
     dark: Cell<bool>,
     /// Scale last applied by `show`, so `update_tile` rebuilds at the same size.
@@ -1184,6 +1277,8 @@ impl Strip {
             tiles: RefCell::new(Vec::new()),
             selected: Cell::new(0),
             lit: RefCell::new(Vec::new()),
+            lanterns: RefCell::new(Vec::new()),
+            seeds: RefCell::new(Vec::new()),
             look: Cell::new(Look::default()),
             dark: Cell::new(true),
             scale: Cell::new(SCALE_MEDIUM),
@@ -1291,6 +1386,9 @@ impl Strip {
         };
 
         *self.lit.borrow_mut() = tiles.iter().map(|t| t.lantern).collect();
+        *self.seeds.borrow_mut() = tiles.iter().map(drift_seed).collect();
+        self.lanterns.borrow_mut().clear();
+        self.lanterns.borrow_mut().resize_with(tiles.len(), || None);
         let aspects: Vec<f64> = tiles.iter().map(|t| t.aspect).collect();
         let scale = size_scale(
             look.size,
@@ -1340,6 +1438,11 @@ impl Strip {
             // window that is not the selection has to be lit here.
             if tile.lantern {
                 set_highlight(&view, false, true, dark);
+                let glass = self.lantern_glass(view.bounds(), drift_seed(tile));
+                view.addSubview(&glass);
+                if let Some(slot) = self.lanterns.borrow_mut().get_mut(i) {
+                    *slot = Some(glass);
+                }
             }
             let (x, y) = plan.origins[i];
             view.setFrameOrigin(NSPoint::new(x, y));
@@ -1367,6 +1470,46 @@ impl Strip {
             self.panel.center();
         }
         self.panel.orderFrontRegardless();
+    }
+
+    /// Turns a tile's lantern on or off, fading rather than switching.
+    ///
+    /// An agent stopping is not an event worth flinching at — the mark should
+    /// ebb the way the work did. Rebuilding the tile, which is how a lit state
+    /// used to change, gave a hard cut and threw away the drift's phase with it.
+    pub fn set_lantern(&self, index: usize, on: bool) {
+        if self.lit.borrow().get(index).copied() == Some(on) {
+            return;
+        }
+        let tiles = self.tiles.borrow();
+        let Some(view) = tiles.get(index) else {
+            return;
+        };
+        if let Some(slot) = self.lit.borrow_mut().get_mut(index) {
+            *slot = on;
+        }
+
+        let existing = self.lanterns.borrow().get(index).and_then(Clone::clone);
+        let glass = match existing {
+            Some(glass) => glass,
+            None if on => {
+                let seed = self.seeds.borrow().get(index).copied().unwrap_or_default();
+                let glass = self.lantern_glass(view.bounds(), seed);
+                glass.setAlphaValue(0.0);
+                view.addSubview(&glass);
+                if let Some(slot) = self.lanterns.borrow_mut().get_mut(index) {
+                    *slot = Some(glass.clone());
+                }
+                glass
+            }
+            None => return,
+        };
+
+        // Faded to nothing rather than removed: the next summon rebuilds every
+        // tile anyway, so a spent overlay cannot accumulate, and an agent that
+        // starts again picks its own drift back up mid-stride.
+        fade_view(&glass, if on { 1.0 } else { 0.0 }, LANTERN_FADE);
+        set_highlight(view, index == self.selected.get(), on, self.dark.get());
     }
 
     /// Moves the highlight to `index` by restyling two tiles — the cheap path
@@ -1402,6 +1545,15 @@ impl Strip {
         self.content.addSubview(&view);
         slot.removeFromSuperview();
         set_highlight(&view, index == self.selected.get(), tile.lantern, dark);
+        if tile.lantern {
+            let glass = self.lantern_glass(view.bounds(), drift_seed(tile));
+            view.addSubview(&glass);
+            if let Some(slot) = self.lanterns.borrow_mut().get_mut(index) {
+                *slot = Some(glass);
+            }
+        } else if let Some(slot) = self.lanterns.borrow_mut().get_mut(index) {
+            *slot = None;
+        }
         if let Some(slot) = self.lit.borrow_mut().get_mut(index) {
             *slot = tile.lantern;
         }
@@ -1511,15 +1663,11 @@ impl Strip {
     }
 
     fn tile(&self, tile: &Tile, style: Style, m: &Metrics, dark: bool) -> Retained<NSView> {
-        let view = match style {
+        match style {
             Style::Gallery => self.gallery_tile(tile, m, dark),
             Style::Icons => self.icons_tile(tile, m, dark),
             Style::List => self.list_tile(tile, m, dark),
-        };
-        if tile.lantern {
-            view.addSubview(&self.lantern_glass(view.bounds(), drift_seed(tile)));
         }
-        view
     }
 
     /// The light on the glass: a dim warm gradient laid over the whole tile,
@@ -1535,115 +1683,109 @@ impl Strip {
             return glass;
         };
         host.setMasksToBounds(true);
-
-        // Fields of colour that drift past each other, not one gradient sweeping
-        // corner to corner: a sweep reads as a scan and the eye follows it.
-        //
-        // Each field is a radial fade to nothing, sized so its brighter middle
-        // lands on the tile — close enough to have presence rather than being a
-        // flat wash. What kept it from reading as a spotlight is shape: each is
-        // an ellipse at its own angle, never a circle, and four of them overlap
-        // at different orientations so no single outline is ever legible.
-        //
-        // Each drifts on its own two periods, deliberately unequal and sharing
-        // no common factor, so the paths never resynchronise and the colour
-        // keeps recombining instead of looping visibly.
-        let reach = bounds.size.width.max(bounds.size.height);
-        for (red, green, blue, alpha, size, stretch, tilt, sway, x_secs, y_secs) in [
-            (0.30, 0.74, 1.00, 0.17, 1.35, 1.8, 0.40, 0.20, 13.0, 17.0),
-            (0.58, 0.42, 1.00, 0.15, 1.55, 1.5, -0.70, 0.22, 19.0, 11.0),
-            (0.34, 1.00, 0.78, 0.13, 1.25, 2.1, 1.10, 0.18, 23.0, 15.0),
-            (1.00, 0.48, 0.72, 0.12, 1.45, 1.6, -0.30, 0.21, 16.0, 21.0),
-        ] {
-            let span = reach * size;
-            let (wide, tall) = (span * stretch, span / stretch);
-            let blob = CAGradientLayer::new();
-            blob.setFrame(NSRect::new(
-                NSPoint::new(
-                    bounds.size.width.mul_add(0.5, -(wide / 2.0)),
-                    bounds.size.height.mul_add(0.5, -(tall / 2.0)),
-                ),
-                NSSize::new(wide, tall),
-            ));
-            // A radial gradient fills its layer's box, so an oblong layer gives
-            // an ellipse; turning each one differently is what stops four
-            // overlapping fields from ever resolving into a recognisable shape.
-            unsafe {
-                let _: () = msg_send![
-                    &*blob,
-                    setValue: &*NSNumber::new_f64(tilt),
-                    forKeyPath: &*NSString::from_str("transform.rotation.z")
-                ];
-            }
-
-            let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
-            for color in [
-                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha),
-                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha * 0.55),
-                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 0.0),
-            ] {
-                let cg = color.CGColor();
-                let ptr: *const AnyObject = (&raw const *cg).cast();
-                let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
-            }
-            unsafe {
-                let _: () = msg_send![&*blob, setColors: &*colors];
-                let _: () = msg_send![&*blob, setType: &*NSString::from_str("radial")];
-                let _: () = msg_send![&*blob, setStartPoint: NSPoint::new(0.5, 0.5)];
-                let _: () = msg_send![&*blob, setEndPoint: NSPoint::new(1.0, 1.0)];
-            }
-            blob.setLocations(Some(&stops(&[0.0, 0.55, 1.0])));
-            // Blended as light, not as paint. A translucent colour laid over a
-            // dark preview composites toward grey — the chroma is crushed by
-            // the background it is mixing with, which is why saturated stops
-            // still came out as a white haze. Screen blending adds instead of
-            // mixing, so the hue survives on dark pixels and bright parts of
-            // the preview stay readable.
-            unsafe {
-                let _: () = msg_send![
-                    &*blob,
-                    setCompositingFilter: &*NSString::from_str("screenBlendMode")
-                ];
-            }
-
-            for (index, (axis, seconds)) in [("x", x_secs), ("y", y_secs)].into_iter().enumerate() {
-                // Every lit window builds the same four blobs in the same frame,
-                // so without a phase of its own each window would drift in
-                // lockstep with the rest and read as one effect stamped across
-                // the strip. The seed comes from the window itself, so a window
-                // keeps its phase across re-renders rather than jumping every
-                // time the strip is drawn.
-                let scrambled = seed.wrapping_mul(if index == 0 {
-                    0x5851_F42D_4C95_7F2D
-                } else {
-                    0x1405_7B7E_F767_814F
-                });
-                #[allow(clippy::cast_precision_loss)]
-                let offset = (scrambled >> 11) as f64 / (1u64 << 53) as f64;
-                let seconds = seconds * (0.82 + offset * 0.36);
-                let travel = reach * sway;
-                let path = format!("transform.translation.{axis}");
-                let slide =
-                    CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(&path)));
-                slide.setTimeOffset(offset * seconds);
-                // SAFETY: a translation component takes a plain number.
-                unsafe {
-                    slide.setFromValue(Some(&NSNumber::new_f64(-travel)));
-                    slide.setToValue(Some(&NSNumber::new_f64(travel)));
-                    slide.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
-                        &NSString::from_str("easeInEaseOut"),
-                    )));
-                }
-                slide.setDuration(seconds);
-                slide.setAutoreverses(true);
-                slide.setRepeatCount(f32::INFINITY);
-                blob.addAnimation_forKey(&slide, Some(&NSString::from_str(&path)));
-            }
-            host.addSublayer(&blob);
+        for field in &LANTERN_FIELDS {
+            host.addSublayer(&lantern_field(field, bounds, seed));
         }
         glass
     }
+}
 
+/// One drifting field of colour.
+fn lantern_field(field: &Field, bounds: NSRect, seed: u64) -> Retained<CAGradientLayer> {
+    let reach = bounds.size.width.max(bounds.size.height);
+    let span = reach * field.size;
+    let (wide, tall) = (span * field.stretch, span / field.stretch);
+    let blob = CAGradientLayer::new();
+    blob.setFrame(NSRect::new(
+        NSPoint::new(
+            bounds
+                .size
+                .width
+                .mul_add(0.5 + field.anchor.0, -(wide / 2.0)),
+            bounds
+                .size
+                .height
+                .mul_add(0.5 + field.anchor.1, -(tall / 2.0)),
+        ),
+        NSSize::new(wide, tall),
+    ));
+
+    let (red, green, blue) = field.rgb;
+    let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
+    for color in [
+        NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, field.alpha),
+        NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, field.alpha * 0.55),
+        NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 0.0),
+    ] {
+        let cg = color.CGColor();
+        let ptr: *const AnyObject = (&raw const *cg).cast();
+        let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
+    }
+    blob.setLocations(Some(&stops(&[0.0, 0.55, 1.0])));
+    unsafe {
+        let _: () = msg_send![&*blob, setColors: &*colors];
+        let _: () = msg_send![&*blob, setType: &*NSString::from_str("radial")];
+        let _: () = msg_send![&*blob, setStartPoint: NSPoint::new(0.5, 0.5)];
+        let _: () = msg_send![&*blob, setEndPoint: NSPoint::new(1.0, 1.0)];
+        // A radial gradient fills its layer's box, so an oblong layer gives
+        // an ellipse; turning each one differently is what keeps four
+        // overlapping fields from resolving into a recognisable shape.
+        let _: () = msg_send![
+            &*blob,
+            setValue: &*NSNumber::new_f64(field.tilt),
+            forKeyPath: &*NSString::from_str("transform.rotation.z")
+        ];
+        // Blended as light, not as paint. A translucent colour over a dark
+        // preview composites toward grey — the chroma is crushed by the very
+        // background it mixes with, which is why saturated stops still
+        // arrived as a white haze. Screen blending adds instead of mixing,
+        // so the hue survives on dark pixels while bright parts of the
+        // preview stay readable.
+        let _: () = msg_send![
+            &*blob,
+            setCompositingFilter: &*NSString::from_str("screenBlendMode")
+        ];
+    }
+
+    for (index, (axis, seconds)) in [("x", field.periods.0), ("y", field.periods.1)]
+        .into_iter()
+        .enumerate()
+    {
+        // Every lit window builds the same fields in the same frame, so
+        // without a phase of its own each window would drift in lockstep
+        // with the rest and read as one effect stamped across the strip.
+        // The seed comes from the window itself, so a window keeps its
+        // phase across re-renders rather than jumping every time it is
+        // drawn.
+        let scrambled = seed.wrapping_mul(if index == 0 {
+            0x5851_F42D_4C95_7F2D
+        } else {
+            0x1405_7B7E_F767_814F
+        });
+        #[allow(clippy::cast_precision_loss)]
+        let offset = (scrambled >> 11) as f64 / (1u64 << 53) as f64;
+        let seconds = seconds * (0.82 + offset * 0.36);
+        let travel = reach * field.sway;
+        let path = format!("transform.translation.{axis}");
+        let slide = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(&path)));
+        // SAFETY: a translation component takes a plain number.
+        unsafe {
+            slide.setFromValue(Some(&NSNumber::new_f64(-travel)));
+            slide.setToValue(Some(&NSNumber::new_f64(travel)));
+            slide.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+                &NSString::from_str("easeInEaseOut"),
+            )));
+        }
+        slide.setTimeOffset(offset * seconds);
+        slide.setDuration(seconds);
+        slide.setAutoreverses(true);
+        slide.setRepeatCount(f32::INFINITY);
+        blob.addAnimation_forKey(&slide, Some(&NSString::from_str(&path)));
+    }
+    blob
+}
+
+impl Strip {
     /// Gallery: caption row on top, preview (or large icon) below.
     fn gallery_tile(&self, tile: &Tile, m: &Metrics, dark: bool) -> Retained<NSView> {
         let width = gallery_tile_width(tile.aspect, m);

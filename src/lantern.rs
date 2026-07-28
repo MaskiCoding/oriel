@@ -14,9 +14,14 @@ pub const DEFAULT_BINARIES: [&str; 6] = [
 ];
 
 /// CPU an agent's subtree must burn between samples to count as working.
-/// Measured: a working agent burns hundreds of milliseconds per second, a
-/// parked one burns exactly none, so the gap this sits in is enormous.
-const THRESHOLD: Duration = Duration::from_millis(8);
+///
+/// Measured over thirty two-second windows: a working agent burned 180 ms at
+/// the lowest, 290 ms at the median; the same agent parked burned 3.5 ms. The
+/// gap is fifty-fold, and the old 8 ms sat down in the noise where a chatty
+/// MCP server or a stray background child could clear it on its own and light
+/// a window with nothing happening in it. This sits twenty times above idle
+/// and still leaves more than double the headroom under the quietest real work.
+pub const THRESHOLD: Duration = Duration::from_millis(80);
 
 /// An agent waiting on the model burns nothing at all while still very much
 /// working — measured, a busy agent burns CPU in every 500 ms window it is
@@ -25,6 +30,9 @@ const THRESHOLD: Duration = Duration::from_millis(8);
 /// matters: a window that stays lit a few seconds too long is a much smaller
 /// lie than one that goes dark while its agent is still thinking.
 const LATCH: Duration = Duration::from_secs(15);
+
+/// How long the detector waits between samples.
+pub const WINDOW: Duration = Duration::from_millis(2000);
 
 pub struct Lantern {
     binaries: Vec<String>,

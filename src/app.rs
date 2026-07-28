@@ -1131,10 +1131,11 @@ impl App {
             .filter(|(i, _, want)| self.lit.get(*i).copied().unwrap_or(false) != *want)
             .map(|(i, c, want)| (i, c.clone(), want))
             .collect();
-        for (index, candidate, want) in changed {
-            let preview = self.cache.shown(candidate.wid).cloned();
-            self.strip
-                .update_tile(index, &tile_of(&candidate, preview, want));
+        for (index, _, want) in changed {
+            // Fades the overlay in place instead of rebuilding the tile, so a
+            // window that stops working ebbs rather than snapping, and the
+            // preview underneath is never re-laid mid-session.
+            self.strip.set_lantern(index, want);
             if let Some(slot) = self.lit.get_mut(index) {
                 *slot = want;
             }

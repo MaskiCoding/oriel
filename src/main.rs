@@ -157,34 +157,37 @@ fn lantern_probe() {
         .iter()
         .map(|b| (*b).to_string())
         .collect();
-    let mut lantern = lantern::Lantern::new(binaries.clone());
     let roots = snapshot::app_pids();
-    lantern.poll(&roots);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-    lantern.poll(&roots);
 
-    let table = proctable::table();
-    let under = model::descendants(&table, &roots);
-    let mut named = table.clone();
-    proctable::detail(&mut named, &under);
+    let sample = || {
+        let mut table = proctable::table();
+        let under = model::descendants(&table, &roots);
+        proctable::detail(&mut table, &under);
+        table
+    };
+    // Both samples must be detailed the same way, or the "before" CPU reads as
+    // zero and every agent looks like it burned its whole lifetime in one tick.
+    let before = sample();
+    std::thread::sleep(lantern::WINDOW);
+    let after = sample();
+
     println!("apps with windows : {}", roots.len());
-    println!("agents working    : {}", lantern.count());
-    for proc in named.iter().filter(|p| binaries.contains(&p.name)) {
-        let burn = model::burn(&table, &named, proc.pid, &binaries);
+    println!("window            : {:?}", lantern::WINDOW);
+    println!("threshold         : {:?}", lantern::THRESHOLD);
+    for proc in after.iter().filter(|p| binaries.contains(&p.name)) {
+        let burn = model::burn(&before, &after, proc.pid, &binaries);
+        let share = burn.as_secs_f64() / lantern::WINDOW.as_secs_f64() * 100.0;
         println!(
-            "  pid {:>6} {:<14} burned {:>7.1} ms over 2s -> {}",
+            "  pid {:>6} {:<14} {:>7.1} ms  ({share:>5.1}% of a core)  {}",
             proc.pid,
             proc.name,
             burn.as_secs_f64() * 1000.0,
-            if burn > std::time::Duration::from_millis(8) {
+            if burn > lantern::THRESHOLD {
                 "WORKING"
             } else {
-                "idle this sample"
+                "idle"
             }
         );
-    }
-    if lantern.count() == 0 {
-        println!("nothing lit: every agent burned under the threshold for 2s");
     }
 }
 
