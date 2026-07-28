@@ -13,6 +13,11 @@ menubar_icon = true
 [peek]
 enabled = false
 
+[titles]
+show = "title"
+truncate = "end"
+markers = true
+
 [controls]
 arrow_keys = true
 vim_keys = false
@@ -154,6 +159,17 @@ pub fn look_of(lens: &config::ResolvedLens, cfg: &config::Config) -> ui::Look {
             config::Theme::Light => ui::Theme::Light,
             config::Theme::Dark => ui::Theme::Dark,
         },
+        title_show: match cfg.titles.show {
+            config::TitleShow::Title => ui::TitleShow::Title,
+            config::TitleShow::App => ui::TitleShow::App,
+            config::TitleShow::Both => ui::TitleShow::Both,
+        },
+        title_truncate: match cfg.titles.truncate {
+            config::TitleTruncate::Start => ui::TitleTruncate::Start,
+            config::TitleTruncate::Middle => ui::TitleTruncate::Middle,
+            config::TitleTruncate::End => ui::TitleTruncate::End,
+        },
+        markers: cfg.titles.markers,
     }
 }
 

@@ -7,8 +7,8 @@ mod write;
 pub use error::ConfigError;
 pub use types::{
     Apps, Controls, CursorFollowsFocus, Disposition, HideWindows, Keys, OnRelease, Order,
-    PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme,
-    to_model_rules,
+    PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme, TitleShow,
+    TitleTruncate, Titles, to_model_rules,
 };
 pub use write::{save, to_toml};
 
@@ -26,6 +26,7 @@ pub struct Config {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub titles: Titles,
     pub controls: Controls,
     pub keys: Keys,
     pub lenses: Vec<ResolvedLens>,
@@ -42,6 +43,7 @@ impl Default for Config {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            titles: Titles::default(),
             controls: Controls::default(),
             keys: Keys::default(),
             lenses: default_lenses(),
@@ -61,6 +63,7 @@ pub fn parse(toml: &str) -> Result<Config, ConfigError> {
         start_at_login: raw.start_at_login,
         menubar_icon: raw.menubar_icon,
         peek: raw.peek,
+        titles: raw.titles,
         controls: raw.controls,
         keys: raw.keys,
         lenses,
@@ -145,6 +148,10 @@ hide_windows = "windowless"
         assert!(cfg.start_at_login);
         assert!(cfg.menubar_icon);
         assert!(!cfg.peek.enabled);
+        assert_eq!(cfg.titles, Titles::default());
+        assert_eq!(cfg.titles.show, TitleShow::Title);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::End);
+        assert!(cfg.titles.markers);
         assert!(cfg.controls.arrow_keys);
         assert!(!cfg.controls.vim_keys);
         assert_eq!(cfg.controls.cursor_follows_focus, CursorFollowsFocus::Never);
@@ -175,6 +182,7 @@ hide_windows = "windowless"
         assert!(cfg.start_at_login);
         assert!(cfg.menubar_icon);
         assert!(!cfg.peek.enabled);
+        assert_eq!(cfg.titles, Titles::default());
         assert_eq!(cfg.controls, Controls::default());
         assert_eq!(cfg.keys, Keys::default());
 
@@ -215,8 +223,50 @@ hide_windows = "windowless"
         assert_eq!(cfg.lenses, example.lenses);
         assert_eq!(cfg.summon_delay_ms, example.summon_delay_ms);
         assert_eq!(cfg.theme, example.theme);
+        assert_eq!(cfg.titles, example.titles);
         assert_eq!(cfg.controls, example.controls);
         assert_eq!(cfg.keys, example.keys);
+    }
+
+    #[test]
+    fn absent_titles_table_uses_builtin_defaults() {
+        let cfg = parse(
+            r#"
+summon_delay_ms = 0
+theme = "system"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles, Titles::default());
+    }
+
+    #[test]
+    fn parse_titles_variants() {
+        let cfg = parse(
+            r#"
+[titles]
+show = "both"
+truncate = "middle"
+markers = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles.show, TitleShow::Both);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::Middle);
+        assert!(!cfg.titles.markers);
+
+        let cfg = parse(
+            r#"
+[titles]
+show = "app"
+truncate = "start"
+markers = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.titles.show, TitleShow::App);
+        assert_eq!(cfg.titles.truncate, TitleTruncate::Start);
+        assert!(cfg.titles.markers);
     }
 
     #[test]

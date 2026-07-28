@@ -11,7 +11,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSEvent, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
+    NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSLineBreakMode,
+    NSMutableParagraphStyle, NSPanel, NSParagraphStyleAttributeName, NSPopUpMenuWindowLevel,
     NSRunningApplication, NSScreen, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
@@ -23,7 +24,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::kCAGravityResizeAspect;
 
-use crate::look::{Look, ShowOn, Size, Style, Theme};
+use crate::look::{Look, ShowOn, Size, Style, Theme, TitleShow, TitleTruncate};
 
 /// Trackpad points (or equivalent) that must accumulate before one scroll step.
 const SCROLL_STEP: f64 = 40.0;
@@ -104,6 +105,8 @@ const ICON: f64 = 64.0;
 const ICONS_ICON: f64 = 112.0;
 /// Gap between the Icons-style icon and its title.
 const ICONS_GAP: f64 = 6.0;
+/// Separator when `[titles] show = "both"` — en dash with spaces.
+const BOTH_SEP: &str = " – ";
 /// Vertical padding inside a List row beyond icon/title.
 const LIST_PAD_Y: f64 = 4.0;
 /// Gap between List rows — menu-dense, not Gallery's tile gap.
@@ -293,20 +296,52 @@ fn text_width(text: &str, font_size: f64) -> f64 {
     as_f64(text.chars().count()) * font_size * 0.62
 }
 
-fn tile_label(tile: &Tile) -> &str {
-    if tile.title.is_empty() {
-        tile.app.as_str()
-    } else {
-        tile.title.as_str()
+fn tile_label(tile: &Tile, show: TitleShow) -> String {
+    caption_parts(tile, show).0
+}
+
+/// Caption string and match spans for the configured `show` mode.
+/// Spans stay byte ranges into the returned string (not truncated).
+fn caption_parts(tile: &Tile, show: TitleShow) -> (String, Vec<(usize, usize)>) {
+    match show {
+        TitleShow::App => (tile.app.clone(), tile.app_spans.clone()),
+        TitleShow::Title => {
+            if tile.title.is_empty() {
+                (tile.app.clone(), tile.app_spans.clone())
+            } else {
+                (tile.title.clone(), tile.title_spans.clone())
+            }
+        }
+        TitleShow::Both => {
+            if tile.title.is_empty() {
+                (tile.app.clone(), tile.app_spans.clone())
+            } else if tile.app.is_empty() {
+                (tile.title.clone(), tile.title_spans.clone())
+            } else {
+                let mut text =
+                    String::with_capacity(tile.app.len() + BOTH_SEP.len() + tile.title.len());
+                text.push_str(&tile.app);
+                text.push_str(BOTH_SEP);
+                text.push_str(&tile.title);
+                let offset = tile.app.len() + BOTH_SEP.len();
+                let mut spans = tile.app_spans.clone();
+                spans.extend(
+                    tile.title_spans
+                        .iter()
+                        .map(|&(start, len)| (start.saturating_add(offset), len)),
+                );
+                (text, spans)
+            }
+        }
     }
 }
 
-fn list_content_width(tiles: &[Tile], m: &Metrics) -> f64 {
+fn list_content_width(tiles: &[Tile], m: &Metrics, show: TitleShow, markers: bool) -> f64 {
     let mut max_title: f64 = 48.0;
     let mut max_badge: f64 = 0.0;
     for tile in tiles {
-        max_title = max_title.max(text_width(tile_label(tile), m.title_font));
-        if !tile.badge.is_empty() {
+        max_title = max_title.max(text_width(&tile_label(tile, show), m.title_font));
+        if markers && !tile.badge.is_empty() {
             max_badge = max_badge.max(text_width(&tile.badge, m.badge_font));
         }
     }
@@ -471,7 +506,15 @@ fn layout_sized(
     }
 }
 
-fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64, query_space: f64) -> Layout {
+fn plan(
+    tiles: &[Tile],
+    style: Style,
+    m: &Metrics,
+    screen_w: f64,
+    query_space: f64,
+    show: TitleShow,
+    markers: bool,
+) -> Layout {
     match style {
         Style::Gallery => {
             let widths: Vec<f64> = tiles
@@ -503,7 +546,7 @@ fn plan(tiles: &[Tile], style: Style, m: &Metrics, screen_w: f64, query_space: f
         }
         Style::List => list_layout(
             tiles.len(),
-            list_content_width(tiles, m),
+            list_content_width(tiles, m, show, markers),
             m.list_row_h(),
             m.list_gap,
             m.list_pad,
@@ -613,16 +656,24 @@ fn attributed_label(
     spans: &[(usize, usize)],
     font_size: f64,
     base_color: &NSColor,
+    truncate: TitleTruncate,
     mtm: MainThreadMarker,
 ) -> Retained<NSTextField> {
     let ns = NSString::from_str(text);
     let attr = NSMutableAttributedString::from_nsstring(&ns);
     let full = NSRange::new(0, ns.length());
     let font = NSFont::systemFontOfSize(font_size);
-    // SAFETY: font/color are valid attribute values for the given keys.
+    let para = NSMutableParagraphStyle::new();
+    para.setLineBreakMode(match truncate {
+        TitleTruncate::Start => NSLineBreakMode::ByTruncatingHead,
+        TitleTruncate::Middle => NSLineBreakMode::ByTruncatingMiddle,
+        TitleTruncate::End => NSLineBreakMode::ByTruncatingTail,
+    });
+    // SAFETY: font/color/paragraph style are valid attribute values for the given keys.
     unsafe {
         attr.addAttribute_value_range(NSFontAttributeName, &font, full);
         attr.addAttribute_value_range(NSForegroundColorAttributeName, base_color, full);
+        attr.addAttribute_value_range(NSParagraphStyleAttributeName, &para, full);
     }
     if !spans.is_empty() {
         let accent = NSColor::controlAccentColor();
@@ -1029,9 +1080,18 @@ impl Strip {
         };
         self.query_space.set(query_space);
         if look.style == Style::List {
-            self.list_w.set(list_content_width(tiles, &m));
+            self.list_w
+                .set(list_content_width(tiles, &m, look.title_show, look.markers));
         }
-        let plan = plan(tiles, look.style, &m, screen_w, query_space);
+        let plan = plan(
+            tiles,
+            look.style,
+            &m,
+            screen_w,
+            query_space,
+            look.title_show,
+            look.markers,
+        );
         self.panel
             .setContentSize(NSSize::new(plan.width, plan.height));
 
@@ -1316,7 +1376,8 @@ impl Strip {
         }
 
         let mut text_end = width - m.inset;
-        if !tile.badge.is_empty() {
+        let look = self.look.get();
+        if look.markers && !tile.badge.is_empty() {
             let marks = NSTextField::labelWithString(&NSString::from_str(&tile.badge), self.mtm);
             marks.setFont(Some(&NSFont::systemFontOfSize(m.badge_font)));
             marks.setTextColor(Some(&badge_color));
@@ -1328,12 +1389,15 @@ impl Strip {
             text_end -= w + 6.0;
         }
 
-        let (text, spans) = if tile.title.is_empty() {
-            (tile.app.as_str(), tile.app_spans.as_slice())
-        } else {
-            (tile.title.as_str(), tile.title_spans.as_slice())
-        };
-        let label = attributed_label(text, spans, m.title_font, &title_color, self.mtm);
+        let (text, spans) = caption_parts(tile, look.title_show);
+        let label = attributed_label(
+            &text,
+            &spans,
+            m.title_font,
+            &title_color,
+            look.title_truncate,
+            self.mtm,
+        );
         label.setMaximumNumberOfLines(1);
         let label_h = m.title_font + 5.0;
         let label_y = base + (band_h - label_h).max(0.0) / 2.0;
@@ -1539,6 +1603,9 @@ mod tests {
         assert_eq!(look.size, Size::Auto);
         assert_eq!(look.show_on, ShowOn::ActiveScreen);
         assert_eq!(look.theme, Theme::System);
+        assert_eq!(look.title_show, TitleShow::Title);
+        assert_eq!(look.title_truncate, TitleTruncate::End);
+        assert!(look.markers);
     }
 
     #[test]
@@ -1589,8 +1656,8 @@ mod tests {
                 ..Tile::default()
             },
         ];
-        let short = list_content_width(&tiles[..1], &m);
-        let long = list_content_width(&tiles, &m);
+        let short = list_content_width(&tiles[..1], &m, TitleShow::Title, true);
+        let long = list_content_width(&tiles, &m, TitleShow::Title, true);
         assert!(long > short);
         assert!(long <= m.list_max_w);
         assert!(short >= m.list_min_w);
@@ -1628,6 +1695,57 @@ mod tests {
         let big = size_scale(Size::Large, Style::Gallery, 30, 2560.0, 1440.0);
         let small = size_scale(Size::Large, Style::Gallery, 30, 1280.0, 800.0);
         assert!(small <= big);
+    }
+
+    #[test]
+    fn hiding_markers_narrows_list_column() {
+        let m = Metrics::at(SCALE_MEDIUM);
+        let tiles = [Tile {
+            title: "A rather longer window title here".into(),
+            badge: "● 2".into(),
+            ..Tile::default()
+        }];
+        let with = list_content_width(&tiles, &m, TitleShow::Title, true);
+        let without = list_content_width(&tiles, &m, TitleShow::Title, false);
+        assert!(with > without);
+        // Title regains the badge slot; width must still clamp to list bounds.
+        assert!(without >= m.list_min_w);
+        assert!(with <= m.list_max_w);
+    }
+
+    #[test]
+    fn caption_parts_respect_show_mode() {
+        let tile = Tile {
+            app: "Safari".into(),
+            title: "Home".into(),
+            app_spans: vec![(0, 3)],
+            title_spans: vec![(0, 2)],
+            ..Tile::default()
+        };
+        let (as_title, spans) = caption_parts(&tile, TitleShow::Title);
+        assert_eq!(as_title, "Home");
+        assert_eq!(spans, vec![(0, 2)]);
+
+        let (as_app, spans) = caption_parts(&tile, TitleShow::App);
+        assert_eq!(as_app, "Safari");
+        assert_eq!(spans, vec![(0, 3)]);
+
+        let (as_both, spans) = caption_parts(&tile, TitleShow::Both);
+        assert_eq!(as_both, format!("Safari{BOTH_SEP}Home"));
+        let title_offset = "Safari".len() + BOTH_SEP.len();
+        assert_eq!(spans, vec![(0, 3), (title_offset, 2)]);
+
+        let empty_title = Tile {
+            app: "Finder".into(),
+            title: String::new(),
+            app_spans: vec![(0, 6)],
+            ..Tile::default()
+        };
+        let (fallback, spans) = caption_parts(&empty_title, TitleShow::Title);
+        assert_eq!(fallback, "Finder");
+        assert_eq!(spans, vec![(0, 6)]);
+        let (both_fallback, _) = caption_parts(&empty_title, TitleShow::Both);
+        assert_eq!(both_fallback, "Finder");
     }
 
     #[test]
