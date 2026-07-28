@@ -6,9 +6,14 @@ use std::rc::{Rc, Weak};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
+
+use crate::lens::{self, Binding};
+
+/// Return / Enter virtual keycode (Carbon).
+const KEY_RETURN: i64 = 36;
 
 /// Runs `work` on the main run loop after `delay_ms`, outside the current event
 /// handler. Focus can't be done from inside the hot-key handler that consumed
@@ -93,22 +98,6 @@ struct Focus {
     stamp: u32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Modifier {
-    Command,
-    Option,
-}
-
-impl Modifier {
-    fn held(self, flags: CGEventFlags) -> bool {
-        let mask = match self {
-            Self::Command => CGEventFlags::MaskCommand,
-            Self::Option => CGEventFlags::MaskAlternate,
-        };
-        flags.contains(mask)
-    }
-}
-
 struct Candidate {
     pid: i32,
     wid: u32,
@@ -130,17 +119,6 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
     }
 }
 
-/// A pleasant tile shape for windows whose frame the `WindowServer` won't say.
-const FALLBACK_ASPECT: f64 = 1.6;
-
-fn aspect_of(w: &winsrv::WindowInfo) -> f64 {
-    if w.width > 0.0 && w.height > 0.0 {
-        w.width / w.height
-    } else {
-        FALLBACK_ASPECT
-    }
-}
-
 fn switchable(w: &winsrv::WindowInfo) -> bool {
     w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
 }
@@ -152,7 +130,11 @@ const PREVIEW_BUDGET: usize = 32 << 20;
 struct Live {
     candidates: Vec<Candidate>,
     selection: model::Session,
-    trigger: Modifier,
+    binding_idx: usize,
+    /// Whether the strip has been shown (apparition delay may still be pending).
+    shown: bool,
+    /// Epoch captured when this session's reveal was scheduled; stale on cancel/jump.
+    show_epoch: u32,
 }
 
 /// Shared behind an `Rc<RefCell>` between the hot-key and tap callbacks. Both
@@ -162,6 +144,10 @@ struct App {
     ws: Rc<winsrv::WindowServer>,
     strip: ui::Strip,
     session: Option<Live>,
+    bindings: Vec<Binding>,
+    summon_delay_ms: u32,
+    /// Bumped to cancel a pending apparition-delay reveal.
+    show_epoch: u32,
     /// The in-session key tap, enabled only while a session is open.
     keys: Option<input::TapHandle>,
     /// Last modifier flags seen by the flags tap, kept current even between
@@ -181,46 +167,125 @@ struct App {
 }
 
 impl App {
+    fn binding(&self, idx: usize) -> Option<&Binding> {
+        self.bindings.get(idx)
+    }
+
     /// A trigger hot key fired. Opens a session on the first press; once open,
-    /// cycling is driven by the key tap, so re-fires are ignored.
+    /// the same lens is ignored (cycling is the key tap's job) and a different
+    /// lens morphs the strip in place.
     fn trigger(&mut self, id: u32) {
-        if self.session.is_some() {
+        let (idx, backward) = lens::decode_hotkey_id(id);
+        if idx >= self.bindings.len() {
             return;
         }
-        let modifier = if id <= 2 {
-            Modifier::Command
-        } else {
-            Modifier::Option
-        };
-        let backward = id == 2 || id == 4;
 
-        let candidates = self.enumerate(modifier);
+        if let Some(live) = &self.session {
+            if live.binding_idx == idx {
+                return;
+            }
+            self.morph(idx);
+            return;
+        }
+
+        let Some(binding) = self.binding(idx).cloned() else {
+            return;
+        };
+        let candidates = self.enumerate(&binding);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
             return;
         };
         if backward {
             selection.select(candidates.len() - 1);
         }
+
+        let epoch = self.show_epoch;
         self.session = Some(Live {
             candidates,
             selection,
-            trigger: modifier,
+            binding_idx: idx,
+            shown: false,
+            show_epoch: epoch,
         });
+        self.strip.set_look(binding.look);
+
+        let linger = lens::stays_open(binding.on_release);
+        let held = binding.hold.is_empty() || self.held.contains(binding.hold);
 
         // Hot-key dispatch lags the flags tap, so the trigger modifier may
         // already be up by now — a flick too quick to leave a release event.
         // Jump straight away without ever showing the strip in that case.
-        if modifier.held(self.held) {
-            self.set_keys_enabled(true);
-            self.render();
-        } else {
+        if !linger && !held {
             self.jump();
+            return;
+        }
+
+        if self.summon_delay_ms == 0 {
+            self.reveal();
+        } else {
+            let delay = u64::from(self.summon_delay_ms);
+            on_main_after(delay, move || {
+                if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                    app.borrow_mut().reveal_if(epoch);
+                }
+            });
         }
     }
 
+    /// Mid-session lens change: re-resolve, apply look, keep the panel up.
+    fn morph(&mut self, idx: usize) {
+        let Some(binding) = self.binding(idx).cloned() else {
+            return;
+        };
+        let candidates = self.enumerate(&binding);
+        let Some(mut selection) = model::Session::start(candidates.len()) else {
+            self.cancel();
+            return;
+        };
+        selection.select(0);
+        let shown = self.session.as_ref().is_some_and(|l| l.shown);
+        let show_epoch = self
+            .session
+            .as_ref()
+            .map_or(self.show_epoch, |l| l.show_epoch);
+        self.session = Some(Live {
+            candidates,
+            selection,
+            binding_idx: idx,
+            shown,
+            show_epoch,
+        });
+        self.strip.set_look(binding.look);
+        if shown {
+            self.render();
+        }
+    }
+
+    fn reveal_if(&mut self, epoch: u32) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        if live.shown || live.show_epoch != epoch || self.show_epoch != epoch {
+            return;
+        }
+        self.reveal();
+    }
+
+    fn reveal(&mut self) {
+        let Some(live) = &mut self.session else {
+            return;
+        };
+        if live.shown {
+            return;
+        }
+        live.shown = true;
+        self.set_keys_enabled(true);
+        self.render();
+    }
+
     /// A key was pressed while a session is open: Tab (and its auto-repeats)
-    /// moves the selection, Escape cancels; both are swallowed so the focused
-    /// app never sees them. Everything else passes through.
+    /// moves the selection, Return jumps, Escape cancels; both are swallowed so
+    /// the focused app never sees them. Everything else passes through.
     fn on_key(&mut self, event: &objc2_core_graphics::CGEvent) -> input::Disposition {
         if self.session.is_none() {
             return input::Disposition::Keep;
@@ -233,10 +298,11 @@ impl App {
                 self.strip.select(live.selection.selected());
             }
             input::Disposition::Swallow
+        } else if code == KEY_RETURN {
+            self.jump();
+            input::Disposition::Swallow
         } else if code == i64::from(input::KEY_ESCAPE) {
-            self.session = None;
-            self.strip.hide();
-            self.set_keys_enabled(false);
+            self.cancel();
             input::Disposition::Swallow
         } else {
             input::Disposition::Keep
@@ -244,18 +310,42 @@ impl App {
     }
 
     /// Modifier flags changed: track the live state, and if a session is open
-    /// and its trigger modifier is no longer held, jump to the selection.
+    /// and its hold modifiers are no longer held, run the lens release action.
     fn flags_changed(&mut self, flags: CGEventFlags) {
         self.held = flags;
-        let Some(live) = &self.session else { return };
-        if !live.trigger.held(flags) {
-            self.jump();
+        let Some(live) = &self.session else {
+            return;
+        };
+        let Some(binding) = self.binding(live.binding_idx) else {
+            return;
+        };
+        if binding.hold.is_empty() {
+            return;
         }
+        if flags.contains(binding.hold) {
+            return;
+        }
+        if lens::stays_open(binding.on_release) {
+            // Linger/Filter: strip stays; ensure it is visible if delay pending.
+            if !live.shown {
+                self.reveal();
+            }
+            return;
+        }
+        self.jump();
+    }
+
+    fn cancel(&mut self) {
+        self.show_epoch = self.show_epoch.wrapping_add(1);
+        self.session = None;
+        self.strip.hide();
+        self.set_keys_enabled(false);
     }
 
     /// Ends the session and focuses the current selection, deferred briefly so
     /// the focus lands after the triggering event settles (see `on_main_after`).
     fn jump(&mut self) {
+        self.show_epoch = self.show_epoch.wrapping_add(1);
         let Some(live) = self.session.take() else {
             return;
         };
@@ -281,55 +371,32 @@ impl App {
         }
     }
 
-    fn enumerate(&mut self, modifier: Modifier) -> Vec<Candidate> {
-        let spaces = self.ws.spaces();
-        let map = model::SpaceMap::new(spaces.iter().map(|s| model::SpaceDesc {
-            id: s.id,
-            current: s.current,
-            fullscreen: s.fullscreen,
-        }));
-        let space_ids: Vec<u64> = spaces.iter().map(|s| s.id).collect();
-        let mut windows = self.ws.windows(&space_ids);
-        windows.retain(switchable);
-
-        // Order by our own recency, not the WindowServer stacking query, which
-        // stops reflecting focus after a couple of switches.
-        let ids: Vec<model::WindowId> = windows.iter().map(|w| model::WindowId(w.wid)).collect();
-        self.mru.sync(&ids);
+    fn enumerate(&mut self, binding: &Binding) -> Vec<Candidate> {
+        let snap = crate::snapshot::snapshot(&self.ws, &mut self.mru);
+        let ids: Vec<model::WindowId> = snap.windows.iter().map(|w| w.id).collect();
         self.cache.retain(|wid| ids.contains(&model::WindowId(wid)));
-        let mut by_wid: std::collections::HashMap<u32, winsrv::WindowInfo> =
-            windows.into_iter().map(|w| (w.wid, w)).collect();
-        let mut ordered: Vec<winsrv::WindowInfo> = self
-            .mru
-            .order()
-            .iter()
-            .filter_map(|id| by_wid.remove(&id.0))
-            .collect();
 
-        if modifier == Modifier::Option
-            && let Some(front) = ordered.first().map(|w| w.pid)
-        {
-            ordered.retain(|w| w.pid == front);
-        }
+        let ctx = model::ResolveCtx {
+            active_app: frontmost_pid(),
+            strip_screen: strip_screen_index(binding.look.show_on),
+        };
+        let ordered = model::resolve(&binding.model, &snap.windows, &ctx);
+
+        let by_id: std::collections::HashMap<model::WindowId, &model::Window> =
+            snap.windows.iter().map(|w| (w.id, w)).collect();
         ordered
             .into_iter()
-            .map(|w| {
-                let state = model::WindowState::decode(w.tags, w.attributes);
-                // The per-window Space lookup is an IPC round-trip; skip it
-                // when every Space is a current user desktop (no badge possible).
-                let space = if map.uniform() {
-                    None
-                } else {
-                    self.ws.window_space(w.wid)
-                };
-                Candidate {
-                    pid: w.pid,
-                    wid: w.wid,
-                    badge: map.badge(state.minimized, space),
-                    aspect: aspect_of(&w),
-                    app: w.app.unwrap_or_default(),
-                    title: w.title.unwrap_or_default(),
-                }
+            .filter_map(|id| {
+                let w = by_id.get(&id)?;
+                let meta = snap.meta.get(&id)?;
+                Some(Candidate {
+                    pid: meta.pid,
+                    wid: id.0,
+                    app: w.app_name.clone(),
+                    title: w.title.clone(),
+                    badge: meta.badge.clone(),
+                    aspect: meta.aspect,
+                })
             })
             .collect()
     }
@@ -338,7 +405,9 @@ impl App {
     /// (stale beats late — first paint never waits on a capture), then a
     /// refresh of every visible window queued behind it.
     fn render(&mut self) {
-        let Some(live) = &self.session else { return };
+        let Some(live) = &self.session else {
+            return;
+        };
         let cache = &mut self.cache;
         let tiles: Vec<ui::Tile> = live
             .candidates
@@ -356,7 +425,9 @@ impl App {
     fn preview_ready(&mut self, wid: u32, image: CFRetained<CGImage>) {
         let bytes = capture::cost(&image);
         self.cache.insert(wid, image.clone(), bytes);
-        let Some(live) = &self.session else { return };
+        let Some(live) = &self.session else {
+            return;
+        };
         let Some(index) = live.candidates.iter().position(|c| c.wid == wid) else {
             return;
         };
@@ -380,10 +451,54 @@ impl App {
     }
 
     fn request_preview(&self, wid: u32) {
+        // Synthetic windowless ids are not capturable.
+        if wid & 0x8000_0000 != 0 {
+            return;
+        }
         if let Some(worker) = &self.worker {
             worker.request(wid);
         }
     }
+}
+
+fn frontmost_pid() -> i32 {
+    use objc2_app_kit::NSWorkspace;
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map_or(0, |app| app.processIdentifier())
+}
+
+/// Screen index matching `snapshot`'s `NSScreen::screens` order for the strip.
+fn strip_screen_index(show_on: ui::ShowOn) -> u32 {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return 0;
+    };
+    let screens = NSScreen::screens(mtm);
+    let n = screens.count();
+    if n == 0 {
+        return 0;
+    }
+    let target = match show_on {
+        ui::ShowOn::MenubarScreen => screens.firstObject().or_else(|| NSScreen::mainScreen(mtm)),
+        // Pointer follows the mouse; without a shared mouse helper, active screen.
+        ui::ShowOn::ActiveScreen | ui::ShowOn::PointerScreen => NSScreen::mainScreen(mtm),
+    };
+    let Some(target) = target else {
+        return 0;
+    };
+    let target_frame = target.frame();
+    for i in 0..n {
+        let screen = screens.objectAtIndex(i);
+        let frame = screen.frame();
+        if (frame.origin.x - target_frame.origin.x).abs() < f64::EPSILON
+            && (frame.origin.y - target_frame.origin.y).abs() < f64::EPSILON
+            && (frame.size.width - target_frame.size.width).abs() < f64::EPSILON
+            && (frame.size.height - target_frame.size.height).abs() < f64::EPSILON
+        {
+            return u32::try_from(i).unwrap_or(0);
+        }
+    }
+    0
 }
 
 /// The window id of the current frontmost app's focused window, so the MRU can
@@ -397,7 +512,7 @@ fn front_window() -> Option<u32> {
 
 /// Boots the resident app: suppresses the native switcher, binds the triggers
 /// and the release tap, then runs the main loop until quit.
-pub fn run(mtm: MainThreadMarker) {
+pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
@@ -408,11 +523,23 @@ pub fn run(mtm: MainThreadMarker) {
             return;
         }
     };
+
+    let bindings = lens::bindings_from_config(cfg);
+    if bindings.is_empty() {
+        println!("input: no lenses registered");
+        return;
+    }
+    let summon_delay_ms = cfg.summon_delay_ms.min(900);
+    let triggers = lens::triggers_for(&bindings);
+
     let strip = ui::Strip::new(mtm);
     let app = Rc::new(RefCell::new(App {
         ws: Rc::new(ws),
         strip,
         session: None,
+        bindings,
+        summon_delay_ms,
+        show_epoch: 0,
         keys: None,
         held: CGEventFlags::empty(),
         generation: Rc::new(Cell::new(0)),
@@ -422,18 +549,6 @@ pub fn run(mtm: MainThreadMarker) {
     }));
     APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
     spawn_capture(&app);
-
-    let triggers = [
-        (1, input::CMD),
-        (2, input::CMD | input::SHIFT),
-        (3, input::OPTION),
-        (4, input::OPTION | input::SHIFT),
-    ]
-    .map(|(id, modifiers)| input::Trigger {
-        id,
-        key: input::KEY_TAB,
-        modifiers,
-    });
 
     let on_trigger = app.clone();
     let Some(_hotkeys) = input::Hotkeys::register(&triggers, move |id| {

@@ -439,6 +439,7 @@ dependencies = [
  "ax",
  "block2",
  "capture",
+ "config",
  "dispatch2",
  "input",
  "model",
