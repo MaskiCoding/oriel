@@ -254,6 +254,14 @@ menubar_icon = true
 [peek]
 enabled = false
 
+[animation]
+fade_out = false           # dismissal only; nothing ever animates in
+
+[titles]
+show = "title"             # title | app | both
+truncate = "end"           # start | middle | end
+markers = true             # state markers (● ⤢) and Space badges
+
 [controls]
 arrow_keys = true
 vim_keys = false
