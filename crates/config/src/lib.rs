@@ -1,7 +1,8 @@
-//! TOML config: schema, defaults, parse + validate.
+//! TOML config: schema, defaults, parse + validate + write.
 
 mod error;
 mod types;
+mod write;
 
 pub use error::ConfigError;
 pub use types::{
@@ -9,6 +10,7 @@ pub use types::{
     PassTriggers, Peek, ResolvedLens, Rule, Screens, ShowOn, Size, Spaces, Style, Theme,
     to_model_rules,
 };
+pub use write::{save, to_toml};
 
 use std::path::Path;
 
