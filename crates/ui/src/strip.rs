@@ -1434,11 +1434,25 @@ impl Strip {
     }
 
     fn tile(&self, tile: &Tile, style: Style, m: &Metrics, dark: bool) -> Retained<NSView> {
-        match style {
+        let view = match style {
             Style::Gallery => self.gallery_tile(tile, m, dark),
             Style::Icons => self.icons_tile(tile, m, dark),
             Style::List => self.list_tile(tile, m, dark),
+        };
+        if tile.lantern {
+            // The preview is opaque, so tinting behind it would only colour the
+            // margins. The light has to fall on the glass: a rose pane laid over
+            // the whole tile, which the corner radius clips to shape.
+            let glass = NSView::initWithFrame(self.mtm.alloc(), view.bounds());
+            glass.setWantsLayer(true);
+            if let Some(layer) = glass.layer() {
+                layer.setBackgroundColor(Some(
+                    &lantern_color().colorWithAlphaComponent(0.22).CGColor(),
+                ));
+            }
+            view.addSubview(&glass);
         }
+        view
     }
 
     /// Gallery: caption row on top, preview (or large icon) below.

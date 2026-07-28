@@ -841,8 +841,9 @@ impl App {
     fn act_close(&mut self) {
         if let Some((pid, wid)) = self.selected_target() {
             let _ = ax::close_window(pid, wid);
+            self.forget(|c| c.wid != wid);
         }
-        self.refresh_candidates();
+        self.settle();
     }
 
     fn act_minimize(&mut self) {
@@ -870,8 +871,10 @@ impl App {
     fn act_quit(&mut self) {
         if let Some((pid, _)) = self.selected_target() {
             quit_pid(pid);
+            // Every window of the app goes with it, not just the selected one.
+            self.forget(|c| c.pid != pid);
         }
-        self.refresh_candidates();
+        self.settle();
     }
 
     fn act_hide(&mut self) {
@@ -881,6 +884,54 @@ impl App {
             let _ = ax::set_app_hidden(pid, !now);
         }
         self.refresh_candidates();
+    }
+
+    /// Drops rows the user has just destroyed, before the system agrees.
+    ///
+    /// Quitting an app is a request, not an edit: the process takes time to go,
+    /// so re-enumerating straight away lists windows that are already doomed and
+    /// the strip keeps showing them. Removing them here means the strip never
+    /// claims a window that is gone; [`Self::settle`] puts anything back that
+    /// survived, so a refused quit corrects itself.
+    fn forget(&mut self, keep: impl Fn(&Candidate) -> bool) {
+        let Some(live) = &mut self.session else {
+            return;
+        };
+        let before = live.candidates.len();
+        live.candidates.retain(&keep);
+        live.base.retain(&keep);
+        if live.candidates.len() == before {
+            return;
+        }
+        if live.candidates.is_empty() {
+            self.cancel();
+            return;
+        }
+        let selected = live.selection.selected().min(live.candidates.len() - 1);
+        let Some(mut selection) = model::Session::start(live.candidates.len()) else {
+            return;
+        };
+        selection.select(selected);
+        live.selection = selection;
+        if live.shown {
+            self.render();
+        }
+    }
+
+    /// Re-enumerates once the system has had time to act on a destructive key.
+    fn settle(&mut self) {
+        let Some(epoch) = self.session.as_ref().map(|l| l.show_epoch) else {
+            return;
+        };
+        on_main_after(450, move || {
+            let Some(app) = APP.with(|slot| slot.borrow().upgrade()) else {
+                return;
+            };
+            let mut app = app.borrow_mut();
+            if app.session.as_ref().is_some_and(|l| l.show_epoch == epoch) {
+                app.refresh_candidates();
+            }
+        });
     }
 
     /// Re-resolve after a destructive / state-changing action; clamp selection.
