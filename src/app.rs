@@ -1,19 +1,20 @@
 //! The M1 loop: hold a trigger, cycle with taps, release to jump.
 
+#[path = "keys.rs"]
+mod keys;
+
 use std::cell::{Cell, RefCell};
 use std::panic::AssertUnwindSafe;
 use std::rc::{Rc, Weak};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
 
 use crate::lens::{self, Binding};
-
-/// Return / Enter virtual keycode (Carbon).
-const KEY_RETURN: i64 = 36;
+use keys::{ActionKeys, Dir, KEY_DELETE};
 
 /// Runs `work` on the main run loop after `delay_ms`, outside the current event
 /// handler. Focus can't be done from inside the hot-key handler that consumed
@@ -105,6 +106,8 @@ struct Candidate {
     title: String,
     badge: String,
     aspect: f64,
+    title_spans: Vec<(usize, usize)>,
+    app_spans: Vec<(usize, usize)>,
 }
 
 fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
@@ -115,12 +118,65 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
         aspect: c.aspect,
         preview,
         badge: c.badge.clone(),
-        ..ui::Tile::default()
+        title_spans: c.title_spans.clone(),
+        app_spans: c.app_spans.clone(),
     }
 }
 
 fn switchable(w: &winsrv::WindowInfo) -> bool {
     w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
+}
+
+fn as_window(c: &Candidate) -> model::Window {
+    model::Window {
+        id: model::WindowId(c.wid),
+        app: c.pid,
+        app_name: c.app.clone(),
+        title: c.title.clone(),
+        state: model::WindowState::decode(0, 0x2),
+        fullscreen: false,
+        space: None,
+        space_visible: true,
+        space_ordinal: 0,
+        screen: 0,
+        created: 0,
+        is_main: true,
+        windowless: false,
+    }
+}
+
+fn apply_spans(c: &mut Candidate, m: Option<&model::Match>) {
+    c.title_spans.clear();
+    c.app_spans.clear();
+    let Some(m) = m else {
+        return;
+    };
+    match m.field {
+        model::Field::Title => c.title_spans.clone_from(&m.spans),
+        model::Field::App => c.app_spans.clone_from(&m.spans),
+    }
+}
+
+fn rank_filter(base: Vec<Candidate>, query: &str) -> Vec<Candidate> {
+    let windows: Vec<model::Window> = base.iter().map(as_window).collect();
+    let ordered = model::filter(query, &windows);
+    let mut by_id: std::collections::HashMap<u32, Candidate> =
+        base.into_iter().map(|c| (c.wid, c)).collect();
+    let mut candidates = Vec::with_capacity(ordered.len());
+    for (id, m) in ordered {
+        let Some(mut c) = by_id.remove(&id.0) else {
+            continue;
+        };
+        apply_spans(&mut c, m.as_ref());
+        candidates.push(c);
+    }
+    candidates
+}
+
+fn quit_pid(pid: i32) {
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        let _ = app.terminate();
+    }
 }
 
 /// The preview cache's hard byte budget; at tile-sized thumbnails this is on
@@ -135,6 +191,8 @@ struct Live {
     shown: bool,
     /// Epoch captured when this session's reveal was scheduled; stale on cancel/jump.
     show_epoch: u32,
+    /// `None` = not filtering. `Some` = Filter mode with that query (may be empty).
+    filter: Option<String>,
 }
 
 /// Shared behind an `Rc<RefCell>` between the hot-key and tap callbacks. Both
@@ -150,6 +208,8 @@ struct App {
     show_epoch: u32,
     /// The in-session key tap, enabled only while a session is open.
     keys: Option<input::TapHandle>,
+    action_keys: ActionKeys,
+    controls: config::Controls,
     /// Last modifier flags seen by the flags tap, kept current even between
     /// sessions so `trigger` can tell whether the trigger key is still down.
     held: CGEventFlags,
@@ -206,6 +266,7 @@ impl App {
             binding_idx: idx,
             shown: false,
             show_epoch: epoch,
+            filter: None,
         });
         self.strip.set_look(binding.look);
 
@@ -248,12 +309,14 @@ impl App {
             .session
             .as_ref()
             .map_or(self.show_epoch, |l| l.show_epoch);
+        self.strip.set_query(None);
         self.session = Some(Live {
             candidates,
             selection,
             binding_idx: idx,
             shown,
             show_epoch,
+            filter: None,
         });
         self.strip.set_look(binding.look);
         if shown {
@@ -283,29 +346,335 @@ impl App {
         self.render();
     }
 
-    /// A key was pressed while a session is open: Tab (and its auto-repeats)
-    /// moves the selection, Return jumps, Escape cancels; both are swallowed so
-    /// the focused app never sees them. Everything else passes through.
+    /// A key was pressed while a session is open. Bound actions and Filter
+    /// input are swallowed; everything else passes through.
     fn on_key(&mut self, event: &objc2_core_graphics::CGEvent) -> input::Disposition {
         if self.session.is_none() {
             return input::Disposition::Keep;
         }
         let code = input::keycode(event);
+        let flags = input::flags(event);
+        let in_filter = self.session.as_ref().is_some_and(|l| l.filter.is_some());
+
         if code == i64::from(input::KEY_TAB) {
-            let backward = input::flags(event).contains(CGEventFlags::MaskShift);
+            let backward = flags.contains(CGEventFlags::MaskShift);
             if let Some(live) = &mut self.session {
                 live.selection.cycle(backward);
                 self.strip.select(live.selection.selected());
             }
-            input::Disposition::Swallow
-        } else if code == KEY_RETURN {
+            return input::Disposition::Swallow;
+        }
+
+        if self.action_keys.cancel == Some(code) {
+            if in_filter {
+                self.exit_filter();
+            } else {
+                self.cancel();
+            }
+            return input::Disposition::Swallow;
+        }
+
+        if self.action_keys.focus == Some(code) {
             self.jump();
-            input::Disposition::Swallow
-        } else if code == i64::from(input::KEY_ESCAPE) {
+            return input::Disposition::Swallow;
+        }
+
+        if in_filter {
+            if code == KEY_DELETE {
+                self.filter_backspace();
+                return input::Disposition::Swallow;
+            }
+            if !keys::has_cmd_or_ctrl(flags) {
+                let chars = keys::event_chars(event);
+                if keys::is_typing(&chars) {
+                    self.filter_type(&chars);
+                    return input::Disposition::Swallow;
+                }
+            }
+            // Arrows still move; vim letters are typing above.
+            if self.controls.arrow_keys {
+                let dir = match code {
+                    123 => Some(Dir::Left),
+                    124 => Some(Dir::Right),
+                    125 => Some(Dir::Down),
+                    126 => Some(Dir::Up),
+                    _ => None,
+                };
+                if let Some(dir) = dir {
+                    self.move_sel(dir);
+                    return input::Disposition::Swallow;
+                }
+            }
+            return input::Disposition::Keep;
+        }
+
+        if self.action_keys.close == Some(code) {
+            self.act_close();
+            return input::Disposition::Swallow;
+        }
+        if self.action_keys.minimize == Some(code) {
+            self.act_minimize();
+            return input::Disposition::Swallow;
+        }
+        if self.action_keys.fullscreen == Some(code) {
+            self.act_fullscreen();
+            return input::Disposition::Swallow;
+        }
+        if self.action_keys.quit_app == Some(code) {
+            self.act_quit();
+            return input::Disposition::Swallow;
+        }
+        if self.action_keys.hide_app == Some(code) {
+            self.act_hide();
+            return input::Disposition::Swallow;
+        }
+
+        if let Some(dir) = keys::movement(code, &self.controls) {
+            self.move_sel(dir);
+            return input::Disposition::Swallow;
+        }
+
+        // Linger / Filter-release lenses: typing enters Filter directly.
+        if self.stays_open() && !keys::has_cmd_or_ctrl(flags) {
+            let chars = keys::event_chars(event);
+            if keys::is_typing(&chars) {
+                self.enter_filter(Some(&chars));
+                return input::Disposition::Swallow;
+            }
+        }
+
+        input::Disposition::Keep
+    }
+
+    fn stays_open(&self) -> bool {
+        self.session
+            .as_ref()
+            .and_then(|l| self.binding(l.binding_idx))
+            .is_some_and(|b| lens::stays_open(b.on_release))
+    }
+
+    fn move_sel(&mut self, dir: Dir) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let n = live.candidates.len();
+        let selected = live.selection.selected();
+        let style = self
+            .binding(live.binding_idx)
+            .map_or(ui::Style::Gallery, |b| b.look.style);
+        let cols = keys::grid_cols(n, style);
+        let next = keys::step(selected, n, cols, dir);
+        if let Some(live) = &mut self.session {
+            live.selection.select(next);
+        }
+        self.strip.select(next);
+    }
+
+    fn enter_filter(&mut self, initial: Option<&str>) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let need_reveal = !live.shown;
+        let q = initial.unwrap_or("").to_owned();
+        if let Some(live) = &mut self.session {
+            live.filter = Some(q.clone());
+        }
+        self.strip.set_query(Some(&q));
+        if need_reveal {
+            self.reveal();
+        }
+        self.apply_filter();
+    }
+
+    fn exit_filter(&mut self) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let binding_idx = live.binding_idx;
+        let selected_wid = live
+            .candidates
+            .get(live.selection.selected())
+            .map(|c| c.wid);
+        let shown = live.shown;
+        let show_epoch = live.show_epoch;
+        self.strip.set_query(None);
+        let Some(binding) = self.binding(binding_idx).cloned() else {
+            return;
+        };
+        let candidates = self.enumerate(&binding);
+        if candidates.is_empty() {
             self.cancel();
-            input::Disposition::Swallow
-        } else {
-            input::Disposition::Keep
+            return;
+        }
+        let mut selection = model::Session::start(candidates.len()).unwrap();
+        if let Some(wid) = selected_wid
+            && let Some(i) = candidates.iter().position(|c| c.wid == wid)
+        {
+            selection.select(i);
+        }
+        self.session = Some(Live {
+            candidates,
+            selection,
+            binding_idx,
+            shown,
+            show_epoch,
+            filter: None,
+        });
+        if shown {
+            self.render();
+        }
+    }
+
+    fn filter_type(&mut self, chars: &str) {
+        let shown = {
+            let Some(live) = &mut self.session else {
+                return;
+            };
+            let Some(q) = &mut live.filter else {
+                return;
+            };
+            q.push_str(chars);
+            q.clone()
+        };
+        self.strip.set_query(Some(&shown));
+        self.apply_filter();
+    }
+
+    fn filter_backspace(&mut self) {
+        let shown = {
+            let Some(live) = &mut self.session else {
+                return;
+            };
+            let Some(q) = &mut live.filter else {
+                return;
+            };
+            q.pop();
+            q.clone()
+        };
+        self.strip.set_query(Some(&shown));
+        self.apply_filter();
+    }
+
+    /// Reorder candidates by match quality; keep all tiles; select best (0).
+    fn apply_filter(&mut self) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let Some(query) = live.filter.clone() else {
+            return;
+        };
+        let binding_idx = live.binding_idx;
+        let shown = live.shown;
+        let show_epoch = live.show_epoch;
+        let Some(binding) = self.binding(binding_idx).cloned() else {
+            return;
+        };
+        let base = self.enumerate(&binding);
+        if base.is_empty() {
+            self.cancel();
+            return;
+        }
+        let candidates = rank_filter(base, &query);
+        let Some(mut selection) = model::Session::start(candidates.len()) else {
+            self.cancel();
+            return;
+        };
+        selection.select(0);
+        self.session = Some(Live {
+            candidates,
+            selection,
+            binding_idx,
+            shown,
+            show_epoch,
+            filter: Some(query),
+        });
+        if shown {
+            self.render();
+        }
+    }
+
+    fn selected_target(&self) -> Option<(i32, u32)> {
+        let live = self.session.as_ref()?;
+        let c = live.candidates.get(live.selection.selected())?;
+        Some((c.pid, c.wid))
+    }
+
+    fn act_close(&mut self) {
+        if let Some((pid, wid)) = self.selected_target() {
+            let _ = ax::close_window(pid, wid);
+        }
+        self.refresh_candidates();
+    }
+
+    fn act_minimize(&mut self) {
+        if let Some((pid, wid)) = self.selected_target() {
+            let next = !ax::is_minimized(pid, wid).unwrap_or(false);
+            let _ = ax::set_minimized(pid, wid, next);
+        }
+        self.refresh_candidates();
+    }
+
+    fn act_fullscreen(&mut self) {
+        if let Some((pid, wid)) = self.selected_target() {
+            let next = !ax::is_fullscreen(pid, wid).unwrap_or(false);
+            let _ = ax::set_fullscreen(pid, wid, next);
+        }
+        self.refresh_candidates();
+    }
+
+    fn act_quit(&mut self) {
+        if let Some((pid, _)) = self.selected_target() {
+            quit_pid(pid);
+        }
+        self.refresh_candidates();
+    }
+
+    fn act_hide(&mut self) {
+        if let Some((pid, _)) = self.selected_target() {
+            let next = !ax::is_app_hidden(pid).unwrap_or(false);
+            let _ = ax::set_app_hidden(pid, next);
+        }
+        self.refresh_candidates();
+    }
+
+    /// Re-resolve after a destructive / state-changing action; clamp selection.
+    fn refresh_candidates(&mut self) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let binding_idx = live.binding_idx;
+        let selected = live.selection.selected();
+        let filter = live.filter.clone();
+        let shown = live.shown;
+        let show_epoch = live.show_epoch;
+        let Some(binding) = self.binding(binding_idx).cloned() else {
+            return;
+        };
+        let base = self.enumerate(&binding);
+        if base.is_empty() {
+            self.cancel();
+            return;
+        }
+        let candidates = match &filter {
+            Some(query) => rank_filter(base, query),
+            None => base,
+        };
+        if candidates.is_empty() {
+            self.cancel();
+            return;
+        }
+        let mut selection = model::Session::start(candidates.len()).unwrap();
+        selection.select(selected.min(candidates.len() - 1));
+        self.session = Some(Live {
+            candidates,
+            selection,
+            binding_idx,
+            shown,
+            show_epoch,
+            filter,
+        });
+        if shown {
+            self.render();
         }
     }
 
@@ -325,10 +694,16 @@ impl App {
         if flags.contains(binding.hold) {
             return;
         }
-        if lens::stays_open(binding.on_release) {
+        let on_release = binding.on_release;
+        if lens::stays_open(on_release) {
             // Linger/Filter: strip stays; ensure it is visible if delay pending.
             if !live.shown {
                 self.reveal();
+            }
+            if on_release == config::OnRelease::Filter
+                && self.session.as_ref().is_some_and(|l| l.filter.is_none())
+            {
+                self.enter_filter(None);
             }
             return;
         }
@@ -338,6 +713,7 @@ impl App {
     fn cancel(&mut self) {
         self.show_epoch = self.show_epoch.wrapping_add(1);
         self.session = None;
+        self.strip.set_query(None);
         self.strip.hide();
         self.set_keys_enabled(false);
     }
@@ -349,6 +725,7 @@ impl App {
         let Some(live) = self.session.take() else {
             return;
         };
+        self.strip.set_query(None);
         self.strip.hide();
         self.set_keys_enabled(false);
         let stamp = self.generation.get().wrapping_add(1);
@@ -396,6 +773,8 @@ impl App {
                     title: w.title.clone(),
                     badge: meta.badge.clone(),
                     aspect: meta.aspect,
+                    title_spans: Vec::new(),
+                    app_spans: Vec::new(),
                 })
             })
             .collect()
@@ -498,6 +877,8 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
     }
     let summon_delay_ms = cfg.summon_delay_ms.min(900);
     let triggers = lens::triggers_for(&bindings);
+    let action_keys = ActionKeys::resolve(&cfg.keys);
+    let controls = cfg.controls.clone();
 
     let strip = ui::Strip::new(mtm);
     let app = Rc::new(RefCell::new(App {
@@ -508,6 +889,8 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         summon_delay_ms,
         show_epoch: 0,
         keys: None,
+        action_keys,
+        controls,
         held: CGEventFlags::empty(),
         generation: Rc::new(Cell::new(0)),
         mru: model::Mru::default(),
