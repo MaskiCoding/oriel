@@ -805,17 +805,23 @@ impl App {
     }
 
     fn act_minimize(&mut self) {
-        if let Some((pid, wid)) = self.selected_target() {
-            let next = !ax::is_minimized(pid, wid).unwrap_or(false);
-            let _ = ax::set_minimized(pid, wid, next);
+        // A failed read is unknown, not "not minimized" — toggling on a guess
+        // would minimize a window the user asked to restore.
+        if let Some((pid, wid)) = self.selected_target()
+            && let Some(now) = ax::is_minimized(pid, wid)
+        {
+            let _ = ax::set_minimized(pid, wid, !now);
         }
         self.refresh_candidates();
     }
 
     fn act_fullscreen(&mut self) {
-        if let Some((pid, wid)) = self.selected_target() {
-            let next = !ax::is_fullscreen(pid, wid).unwrap_or(false);
-            let _ = ax::set_fullscreen(pid, wid, next);
+        // `None` means the window has no AXFullScreen at all, so there is
+        // nothing to toggle — better than guessing "not fullscreen".
+        if let Some((pid, wid)) = self.selected_target()
+            && let Some(now) = ax::is_fullscreen(pid, wid)
+        {
+            let _ = ax::set_fullscreen(pid, wid, !now);
         }
         self.refresh_candidates();
     }
@@ -828,9 +834,10 @@ impl App {
     }
 
     fn act_hide(&mut self) {
-        if let Some((pid, _)) = self.selected_target() {
-            let next = !ax::is_app_hidden(pid).unwrap_or(false);
-            let _ = ax::set_app_hidden(pid, next);
+        if let Some((pid, _)) = self.selected_target()
+            && let Some(now) = ax::is_app_hidden(pid)
+        {
+            let _ = ax::set_app_hidden(pid, !now);
         }
         self.refresh_candidates();
     }
@@ -1237,14 +1244,26 @@ impl App {
         NSApplication::sharedApplication(self.mtm).terminate(None);
     }
 
+    /// Only exit once the replacement is actually running — quitting after a
+    /// failed spawn would leave the user with no switcher at all.
     fn restart(&mut self) {
+        let Ok(exe) = std::env::current_exe() else {
+            println!("restart: cannot find the executable — staying up");
+            return;
+        };
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        // Release the hot keys and the suppression first, so the replacement
+        // can claim them; restore both if the spawn fails.
         self.hotkeys = None;
         self.suppression = None;
-        if let Ok(exe) = std::env::current_exe() {
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            let _ = std::process::Command::new(exe).args(args).spawn();
+        match std::process::Command::new(exe).args(args).spawn() {
+            Ok(_) => NSApplication::sharedApplication(self.mtm).terminate(None),
+            Err(err) => {
+                println!("restart: could not relaunch ({err}) — staying up");
+                self.suppression = input::Suppression::engage();
+                self.sync_hotkeys();
+            }
         }
-        NSApplication::sharedApplication(self.mtm).terminate(None);
     }
 
     fn flush_pending_config(&mut self) {

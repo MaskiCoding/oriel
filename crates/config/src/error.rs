@@ -16,7 +16,8 @@ impl fmt::Display for ConfigError {
         match self {
             Self::Toml(e) => write!(f, "invalid config TOML: {e}"),
             Self::Io { path, source } => {
-                write!(f, "failed to read config {}: {source}", path.display())
+                // `save` reports through this variant too, so do not claim "read".
+                write!(f, "config {}: {source}", path.display())
             }
             Self::EmptyTrigger => write!(f, "lens trigger must not be empty"),
             Self::EmptyBundlePrefix => write!(
