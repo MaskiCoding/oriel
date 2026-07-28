@@ -129,6 +129,12 @@ impl WindowServer {
             let pid = unsafe { self.sl.SLSWindowIteratorGetPID.unwrap()(raw_ptr(&iter)) };
             let wid = unsafe { self.sl.SLSWindowIteratorGetWindowID.unwrap()(raw_ptr(&iter)) };
             let bounds = unsafe { self.sl.SLSWindowIteratorGetBounds.unwrap()(raw_ptr(&iter)) };
+            let app = app_name(pid);
+            // WS title → app name (AX title is layered on by callers that have it).
+            let title = match self.window_title(wid) {
+                Some(t) if !t.trim().is_empty() => Some(t),
+                _ => app.clone(),
+            };
             windows.push(WindowInfo {
                 wid,
                 pid,
@@ -142,8 +148,8 @@ impl WindowServer {
                 y: bounds.y,
                 width: bounds.w,
                 height: bounds.h,
-                app: app_name(pid),
-                title: self.window_title(wid),
+                app,
+                title,
             });
         }
         windows

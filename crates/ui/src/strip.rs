@@ -1,4 +1,6 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -97,6 +99,9 @@ const QUERY_H: f64 = 26.0;
 const QUERY_PROMPT: &str = "Filter";
 /// Drawn caret width inside the query row.
 const CARET_W: f64 = 1.5;
+/// Optional dismiss fade; nothing ever animates in.
+const FADE_OUT_SECS: f64 = 0.09;
+const FADE_OUT_NS: i64 = 90_000_000;
 
 /// Fixed scales for the discrete size settings; `Auto` picks in between.
 const SCALE_SMALL: f64 = 0.7;
@@ -451,6 +456,34 @@ fn attributed_label(
     label
 }
 
+/// Cancels a pending fade-out `orderOut` when the generation no longer matches.
+struct FadeDone {
+    panel: Retained<NSPanel>,
+    generation: Rc<Cell<u32>>,
+    stamp: u32,
+}
+
+unsafe extern "C" fn fade_out_finished(ctx: *mut c_void) {
+    // SAFETY: paired with `Box::into_raw` in `Strip::hide`.
+    let done = unsafe { Box::from_raw(ctx.cast::<FadeDone>()) };
+    if done.generation.get() != done.stamp {
+        return;
+    }
+    done.panel.orderOut(None);
+    done.panel.setAlphaValue(1.0);
+}
+
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_time(when: u64, delta: i64) -> u64;
+    fn dispatch_after_f(
+        when: u64,
+        queue: *const c_void,
+        context: *mut c_void,
+        work: unsafe extern "C" fn(*mut c_void),
+    );
+}
+
 /// The resident overlay panel. Created once and kept alive: `show` builds the
 /// tile grid and orders it front, `select` moves the highlight without
 /// rebuilding, `hide` orders it out.
@@ -470,6 +503,10 @@ pub struct Strip {
     query_caret: RefCell<Option<Retained<NSView>>>,
     /// Extra height currently reserved for the query row (0 when hidden).
     query_space: Cell<f64>,
+    /// When true, `hide` fades alpha out (~90 ms) before ordering out.
+    fade_out: Cell<bool>,
+    /// Bumped on every `show` / `hide` so a mid-fade re-summon cancels the pending `orderOut`.
+    fade_generation: Rc<Cell<u32>>,
 }
 
 impl Strip {
@@ -513,7 +550,14 @@ impl Strip {
             query_label: RefCell::new(None),
             query_caret: RefCell::new(None),
             query_space: Cell::new(0.0),
+            fade_out: Cell::new(false),
+            fade_generation: Rc::new(Cell::new(0)),
         }
+    }
+
+    /// Optional fade on dismiss only. Off by default; nothing ever animates in.
+    pub fn set_fade_out(&self, enabled: bool) {
+        self.fade_out.set(enabled);
     }
 
     /// Sets the presentation used by the next `show`.
@@ -551,6 +595,12 @@ impl Strip {
     /// sizes and centers the panel, highlights `selected`, and orders it front
     /// without activating Oriel.
     pub fn show(&self, tiles: &[Tile], selected: usize) {
+        // Cancel any in-flight fade and restore full opacity before painting —
+        // a fast re-summon must never show a half-faded strip.
+        self.fade_generation
+            .set(self.fade_generation.get().wrapping_add(1));
+        self.panel.setAlphaValue(1.0);
+
         for old in self.tiles.borrow().iter() {
             old.removeFromSuperview();
         }
@@ -642,7 +692,37 @@ impl Strip {
     }
 
     pub fn hide(&self) {
-        self.panel.orderOut(None);
+        let stamp = self.fade_generation.get().wrapping_add(1);
+        self.fade_generation.set(stamp);
+        if !self.fade_out.get() {
+            self.panel.setAlphaValue(1.0);
+            self.panel.orderOut(None);
+            return;
+        }
+        // SAFETY: NSAnimationContext begin/endGrouping + animator alpha ramp.
+        unsafe {
+            let _: () = msg_send![class!(NSAnimationContext), beginGrouping];
+            let ctx: Retained<AnyObject> = msg_send![class!(NSAnimationContext), currentContext];
+            let _: () = msg_send![&*ctx, setDuration: FADE_OUT_SECS];
+            let _: () = msg_send![&*ctx, setAllowsImplicitAnimation: true];
+            let animator: Retained<AnyObject> = msg_send![&*self.panel, animator];
+            let _: () = msg_send![&*animator, setAlphaValue: 0.0_f64];
+            let _: () = msg_send![class!(NSAnimationContext), endGrouping];
+        }
+        let done = Box::new(FadeDone {
+            panel: self.panel.clone(),
+            generation: Rc::clone(&self.fade_generation),
+            stamp,
+        });
+        let when = unsafe { dispatch_time(0, FADE_OUT_NS) };
+        unsafe {
+            dispatch_after_f(
+                when,
+                core::ptr::from_ref(&_dispatch_main_q).cast(),
+                Box::into_raw(done).cast(),
+                fade_out_finished,
+            );
+        }
     }
 
     fn apply_theme(&self, dark: bool) {
