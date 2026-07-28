@@ -87,6 +87,7 @@ fn debug_command(flag: &str, args: &mut impl Iterator<Item = String>) -> bool {
             let path = args.next().unwrap_or_else(|| "capture.png".to_string());
             capture_window(wid, &path);
         }
+        "--lantern" => lantern_probe(),
         "--window-bits" => window_bits(),
         "--snapshot" => dump_snapshot(),
         "--tap-log" => tap_log(),
@@ -148,6 +149,45 @@ fn write_png(image: &objc2_core_graphics::CGImage, path: &str) -> bool {
 
 /// Dumps every switchable window's raw tags/attributes and Space — the way the
 /// state-marker bits were established (minimize a window, diff the output).
+/// Reports what Lantern sees, through the exact path the app uses, so a window
+/// that is not lighting up can be told apart from an agent that is not working.
+#[cfg(debug_assertions)]
+fn lantern_probe() {
+    let binaries: Vec<String> = lantern::DEFAULT_BINARIES
+        .iter()
+        .map(|b| (*b).to_string())
+        .collect();
+    let mut lantern = lantern::Lantern::new(binaries.clone());
+    let roots = snapshot::app_pids();
+    lantern.poll(&roots);
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    lantern.poll(&roots);
+
+    let table = proctable::table();
+    let under = model::descendants(&table, &roots);
+    let mut named = table.clone();
+    proctable::detail(&mut named, &under);
+    println!("apps with windows : {}", roots.len());
+    println!("agents working    : {}", lantern.count());
+    for proc in named.iter().filter(|p| binaries.contains(&p.name)) {
+        let burn = model::burn(&table, &named, proc.pid, &binaries);
+        println!(
+            "  pid {:>6} {:<14} burned {:>7.1} ms over 2s -> {}",
+            proc.pid,
+            proc.name,
+            burn.as_secs_f64() * 1000.0,
+            if burn > std::time::Duration::from_millis(8) {
+                "WORKING"
+            } else {
+                "idle this sample"
+            }
+        );
+    }
+    if lantern.count() == 0 {
+        println!("nothing lit: every agent burned under the threshold for 2s");
+    }
+}
+
 #[cfg(debug_assertions)]
 fn window_bits() {
     let ws = winsrv::WindowServer::connect().expect("windowserver");

@@ -124,6 +124,24 @@ fn owner_of(pid: i32, parent: &HashMap<i32, i32>, roots: &[i32]) -> Option<i32> 
     None
 }
 
+/// What an agent's subtree actually burned between two samples — the number
+/// [`lit`] compares against its threshold. Exposed so a window that is not
+/// lighting up can be told apart from an agent that is not working.
+pub fn burn(before: &[Proc], after: &[Proc], pid: i32, binaries: &[String]) -> Duration {
+    let was: HashMap<i32, Duration> = before.iter().map(|p| (p.pid, p.cpu)).collect();
+    let now: HashMap<i32, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for p in after {
+        children.entry(p.ppid).or_default().push(p.pid);
+    }
+    let agents: Vec<i32> = after
+        .iter()
+        .filter(|p| binaries.iter().any(|b| b == &p.name))
+        .map(|p| p.pid)
+        .collect();
+    burned(pid, &children, &now, &was, &agents)
+}
+
 /// Every process running under any of `roots`, roots included. Callers use this
 /// to resolve true executable names for the few processes that could be agents
 /// instead of the whole table, which costs a syscall each.

@@ -10,7 +10,7 @@ mod spaces;
 mod state;
 
 pub use filter::{Field, Match, Tier, filter, match_str, match_window};
-pub use lantern::{Lit, Proc, by_owner, descendants, lit};
+pub use lantern::{Lit, Proc, burn, by_owner, descendants, lit};
 pub use lens::{
     AppKey, AppScope, Disposition, Grouping, Lens, Order, ResolveCtx, ScreenId, ScreenScope,
     SpaceId, SpaceScope, Window, resolve,

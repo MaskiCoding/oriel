@@ -18,10 +18,13 @@ pub const DEFAULT_BINARIES: [&str; 6] = [
 /// parked one burns exactly none, so the gap this sits in is enormous.
 const THRESHOLD: Duration = Duration::from_millis(8);
 
-/// An agent waiting on a slow network call burns nothing while still working.
-/// Staying lit briefly past the last real work keeps the mark steady instead of
-/// blinking through every pause.
-const LATCH: Duration = Duration::from_secs(6);
+/// An agent waiting on the model burns nothing at all while still very much
+/// working — measured, a busy agent burns CPU in every 500 ms window it is
+/// computing, and exactly none while a request is in flight. The latch has to
+/// outlast that gap or the mark blinks off mid-task, which is the failure that
+/// matters: a window that stays lit a few seconds too long is a much smaller
+/// lie than one that goes dark while its agent is still thinking.
+const LATCH: Duration = Duration::from_secs(15);
 
 pub struct Lantern {
     binaries: Vec<String>,
