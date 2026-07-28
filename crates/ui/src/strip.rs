@@ -793,6 +793,16 @@ fn material_for(dark: bool) -> NSVisualEffectMaterial {
     }
 }
 
+/// A stable number per window, so its lantern always drifts on its own phase.
+/// Two windows of one app must not share it, so the title contributes too.
+fn drift_seed(tile: &Tile) -> u64 {
+    let mut seed = u64::from(tile.pid.unsigned_abs()).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for byte in tile.title.bytes().chain(tile.app.bytes()) {
+        seed = (seed ^ u64::from(byte)).wrapping_mul(0x0100_0000_01B3);
+    }
+    seed
+}
+
 /// `CoreAnimation` wants gradient stops as boxed numbers.
 fn stops(values: &[f64]) -> Retained<NSArray<NSNumber>> {
     let boxed: Vec<Retained<NSNumber>> = values.iter().map(|v| NSNumber::new_f64(*v)).collect();
@@ -1507,7 +1517,7 @@ impl Strip {
             Style::List => self.list_tile(tile, m, dark),
         };
         if tile.lantern {
-            view.addSubview(&self.lantern_glass(view.bounds()));
+            view.addSubview(&self.lantern_glass(view.bounds(), drift_seed(tile)));
         }
         view
     }
@@ -1518,7 +1528,7 @@ impl Strip {
     ///
     /// This is the one thing in the strip that moves. It earns it: stillness is
     /// what tells you a window is finished, so the difference has to be motion.
-    fn lantern_glass(&self, bounds: NSRect) -> Retained<NSView> {
+    fn lantern_glass(&self, bounds: NSRect, seed: u64) -> Retained<NSView> {
         let glass = NSView::initWithFrame(self.mtm.alloc(), bounds);
         glass.setWantsLayer(true);
         let Some(host) = glass.layer() else {
@@ -1578,11 +1588,26 @@ impl Strip {
                 ];
             }
 
-            for (axis, seconds) in [("x", x_secs), ("y", y_secs)] {
+            for (index, (axis, seconds)) in [("x", x_secs), ("y", y_secs)].into_iter().enumerate() {
+                // Every lit window builds the same four blobs in the same frame,
+                // so without a phase of its own each window would drift in
+                // lockstep with the rest and read as one effect stamped across
+                // the strip. The seed comes from the window itself, so a window
+                // keeps its phase across re-renders rather than jumping every
+                // time the strip is drawn.
+                let scrambled = seed.wrapping_mul(if index == 0 {
+                    0x5851_F42D_4C95_7F2D
+                } else {
+                    0x1405_7B7E_F767_814F
+                });
+                #[allow(clippy::cast_precision_loss)]
+                let offset = (scrambled >> 11) as f64 / (1u64 << 53) as f64;
+                let seconds = seconds * (0.82 + offset * 0.36);
                 let travel = reach * sway;
                 let path = format!("transform.translation.{axis}");
                 let slide =
                     CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(&path)));
+                slide.setTimeOffset(offset * seconds);
                 // SAFETY: a translation component takes a plain number.
                 unsafe {
                     slide.setFromValue(Some(&NSNumber::new_f64(-travel)));
