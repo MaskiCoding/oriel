@@ -126,6 +126,42 @@ pub struct Peek {
     pub enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleShow {
+    #[default]
+    Title,
+    App,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleTruncate {
+    Start,
+    Middle,
+    #[default]
+    End,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Titles {
+    pub show: TitleShow,
+    pub truncate: TitleTruncate,
+    pub markers: bool,
+}
+
+impl Default for Titles {
+    fn default() -> Self {
+        Self {
+            show: TitleShow::Title,
+            truncate: TitleTruncate::End,
+            markers: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 #[allow(clippy::struct_excessive_bools)]
@@ -371,6 +407,7 @@ pub(crate) struct RawConfig {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub titles: Titles,
     pub controls: Controls,
     pub keys: Keys,
     #[serde(default, rename = "lens")]
@@ -389,6 +426,7 @@ impl Default for RawConfig {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            titles: Titles::default(),
             controls: Controls::default(),
             keys: Keys::default(),
             lenses: Vec::new(),

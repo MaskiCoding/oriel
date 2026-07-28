@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::Config;
 use crate::error::ConfigError;
-use crate::types::{Controls, Keys, Peek, ResolvedLens, Rule, ShowOn, Theme};
+use crate::types::{Controls, Keys, Peek, ResolvedLens, Rule, ShowOn, Theme, Titles};
 
 #[derive(Serialize)]
 struct OutConfig<'a> {
@@ -15,6 +15,7 @@ struct OutConfig<'a> {
     start_at_login: bool,
     menubar_icon: bool,
     peek: &'a Peek,
+    titles: &'a Titles,
     controls: &'a Controls,
     keys: &'a Keys,
     #[serde(rename = "lens")]
@@ -33,6 +34,7 @@ pub fn to_toml(config: &Config) -> String {
         start_at_login: config.start_at_login,
         menubar_icon: config.menubar_icon,
         peek: &config.peek,
+        titles: &config.titles,
         controls: &config.controls,
         keys: &config.keys,
         lenses: &config.lenses,
@@ -83,7 +85,7 @@ mod tests {
     use crate::parse;
     use crate::types::{
         Apps, CursorFollowsFocus, Disposition, HideWindows, OnRelease, Order, PassTriggers,
-        Screens, Size, Spaces, Style, lens_field_defaults,
+        Screens, Size, Spaces, Style, TitleShow, TitleTruncate, Titles, lens_field_defaults,
     };
 
     fn assert_round_trip(config: &Config) {
@@ -115,6 +117,11 @@ mod tests {
             start_at_login: false,
             menubar_icon: false,
             peek: Peek { enabled: true },
+            titles: Titles {
+                show: TitleShow::Both,
+                truncate: TitleTruncate::Middle,
+                markers: false,
+            },
             controls: Controls {
                 arrow_keys: false,
                 vim_keys: true,
@@ -170,6 +177,28 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_every_titles_variant() {
+        for show in [TitleShow::Title, TitleShow::App, TitleShow::Both] {
+            for truncate in [
+                TitleTruncate::Start,
+                TitleTruncate::Middle,
+                TitleTruncate::End,
+            ] {
+                for markers in [true, false] {
+                    assert_round_trip(&Config {
+                        titles: Titles {
+                            show,
+                            truncate,
+                            markers,
+                        },
+                        ..Config::default()
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
     fn round_trip_every_enum_variant() {
         for theme in [Theme::System, Theme::Light, Theme::Dark] {
             for show_on in [
@@ -197,6 +226,7 @@ mod tests {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek { enabled: false },
+            titles: Titles::default(),
             controls: Controls {
                 arrow_keys: true,
                 vim_keys: false,
