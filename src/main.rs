@@ -1,4 +1,14 @@
 mod app;
+mod login;
+mod menubar;
+
+// Wired by a later task — keep the surface reachable so release stays dead-code-clean.
+#[used]
+static _RESIDENT_SURFACE: fn() = || {
+    let _ = (login::enabled, login::set_enabled);
+    let _ = menubar::MenuBar::set_paused;
+    let _ = || menubar::MenuBar::new(|_| {});
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -8,6 +18,11 @@ fn main() {
                 Some(parent) => input::watchdog_main(parent),
                 None => std::process::exit(2),
             }
+        }
+        #[cfg(debug_assertions)]
+        Some("--menubar-demo") => {
+            menubar_demo();
+            return;
         }
         #[cfg(debug_assertions)]
         Some("--suppress-and-hang") => {
@@ -220,6 +235,32 @@ fn strip_demo() {
 
     let strip = ui::Strip::new(mtm);
     strip.show(&tiles, 1);
+    app.run();
+}
+
+#[cfg(debug_assertions)]
+fn menubar_demo() {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+    println!("login::enabled() = {}", login::enabled());
+
+    let Some(menubar) = menubar::MenuBar::new(|cmd| {
+        println!("{cmd:?}");
+        if cmd == menubar::MenuCommand::Quit {
+            std::process::exit(0);
+        }
+    }) else {
+        println!("menubar-demo: failed to create status item");
+        return;
+    };
+    menubar.set_paused(false);
+    println!("menubar-demo: status item ready — Quit from the menu to exit");
+    // Keep the status item alive for the run loop.
+    std::mem::forget(menubar);
     app.run();
 }
 
