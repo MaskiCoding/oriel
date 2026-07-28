@@ -8,82 +8,18 @@ mod snapshot;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some(flag) if flag == input::WATCHDOG_FLAG => {
-            match args.next().and_then(|p| p.parse().ok()) {
-                Some(parent) => input::watchdog_main(parent),
-                None => std::process::exit(2),
-            }
+    let first = args.next();
+    if first.as_deref() == Some(input::WATCHDOG_FLAG) {
+        match args.next().and_then(|p| p.parse().ok()) {
+            Some(parent) => input::watchdog_main(parent),
+            None => std::process::exit(2),
         }
-        #[cfg(debug_assertions)]
-        Some("--menubar-demo") => {
-            menubar_demo();
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--suppress-and-hang") => {
-            let suppression = input::Suppression::engage();
-            println!(
-                "{}",
-                if suppression.is_some() {
-                    "engaged"
-                } else {
-                    "engage-failed"
-                }
-            );
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-        }
-        #[cfg(debug_assertions)]
-        Some("--focus") => {
-            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
-            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
-            let ws = winsrv::WindowServer::connect().expect("windowserver");
-            let fronted = ws.focus_window(pid, wid);
-            let raised = ax::raise_window(pid, wid);
-            println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--focused-wid") => {
-            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
-            println!("{}", ax::focused_window(pid).unwrap_or(0));
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--capture-window") => {
-            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
-            let path = args.next().unwrap_or_else(|| "capture.png".to_string());
-            capture_window(wid, &path);
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--window-bits") => {
-            window_bits();
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--snapshot") => {
-            dump_snapshot();
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--tap-log") => {
-            tap_log();
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--strip-demo") => {
-            strip_demo();
-            return;
-        }
-        #[cfg(debug_assertions)]
-        Some("--hotkey-log") => {
-            hotkey_log();
-            return;
-        }
-        _ => {}
+    }
+    #[cfg(debug_assertions)]
+    if let Some(flag) = first.as_deref()
+        && debug_command(flag, &mut args)
+    {
+        return;
     }
 
     if !ax::trusted() {
@@ -101,6 +37,61 @@ fn main() {
     };
     let cfg = lens::bootstrap_config();
     app::run(mtm, &cfg);
+}
+
+/// Development entry points. `true` when `flag` was one of them and handled.
+#[cfg(debug_assertions)]
+fn debug_command(flag: &str, args: &mut impl Iterator<Item = String>) -> bool {
+    match flag {
+        "--menubar-demo" => menubar_demo(),
+        "--suppress-and-hang" => {
+            let suppression = input::Suppression::engage();
+            println!(
+                "{}",
+                if suppression.is_some() {
+                    "engaged"
+                } else {
+                    "engage-failed"
+                }
+            );
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        "--focus" => {
+            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let ws = winsrv::WindowServer::connect().expect("windowserver");
+            let fronted = ws.focus_window(pid, wid);
+            let raised = ax::raise_window(pid, wid);
+            println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
+        }
+        "--focused-wid" => {
+            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            println!("{}", ax::focused_window(pid).unwrap_or(0));
+        }
+        "--capture-window" => {
+            let wid: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let path = args.next().unwrap_or_else(|| "capture.png".to_string());
+            capture_window(wid, &path);
+        }
+        "--window-bits" => window_bits(),
+        "--snapshot" => dump_snapshot(),
+        "--tap-log" => tap_log(),
+        "--strip-demo" => {
+            let style = match args.next().as_deref() {
+                Some("icons") => ui::Style::Icons,
+                Some("list") => ui::Style::List,
+                _ => ui::Style::Gallery,
+            };
+            let query = args.next();
+            strip_demo(style, query.as_deref());
+        }
+        "--settings-demo" => settings_demo(&lens::bootstrap_config()),
+        "--hotkey-log" => hotkey_log(),
+        _ => return false,
+    }
+    true
 }
 
 /// Captures a single window to a PNG on disk — proof the private capture path
@@ -247,7 +238,7 @@ fn hotkey_log() {
 }
 
 #[cfg(debug_assertions)]
-fn strip_demo() {
+fn strip_demo(style: ui::Style, query: Option<&str>) {
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
@@ -282,7 +273,32 @@ fn strip_demo() {
         .collect();
 
     let strip = ui::Strip::new(mtm);
+    strip.set_look(ui::Look {
+        style,
+        ..ui::Look::default()
+    });
+    strip.set_query(query);
     strip.show(&tiles, 1);
+    app.run();
+}
+
+/// Opens the settings window over the live config, printing each edit it emits.
+#[cfg(debug_assertions)]
+fn settings_demo(cfg: &config::Config) {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    let settings = ui::Settings::new(mtm, cfg, |edited| {
+        println!(
+            "settings: delay={} theme={:?} lenses={}",
+            edited.summon_delay_ms,
+            edited.theme,
+            edited.lenses.len()
+        );
+    });
+    settings.show();
     app.run();
 }
 
