@@ -149,6 +149,7 @@ struct Focus {
     stamp: u32,
 }
 
+#[derive(Clone)]
 struct Candidate {
     pid: i32,
     wid: u32,
@@ -283,6 +284,9 @@ fn config_path() -> PathBuf {
 const PREVIEW_BUDGET: usize = 32 << 20;
 
 struct Live {
+    /// The unfiltered candidates this session was built from. Filter ranks
+    /// from these so typing does not re-enumerate the `WindowServer` per key.
+    base: Vec<Candidate>,
     candidates: Vec<Candidate>,
     selection: model::Session,
     binding_idx: usize,
@@ -395,6 +399,7 @@ impl App {
         // delay the strip is still invisible but Tab and Escape must already work.
         self.set_keys_enabled(true);
         self.session = Some(Live {
+            base: candidates.clone(),
             candidates,
             selection,
             binding_idx: idx,
@@ -451,6 +456,7 @@ impl App {
             .map_or(self.show_epoch, |l| l.show_epoch);
         self.strip.set_query(None);
         self.session = Some(Live {
+            base: candidates.clone(),
             candidates,
             selection,
             binding_idx: idx,
@@ -711,6 +717,7 @@ impl App {
             selection.select(i);
         }
         self.session = Some(Live {
+            base: candidates.clone(),
             candidates,
             selection,
             binding_idx,
@@ -764,21 +771,19 @@ impl App {
         let binding_idx = live.binding_idx;
         let shown = live.shown;
         let show_epoch = live.show_epoch;
-        let Some(binding) = self.binding(binding_idx).cloned() else {
-            return;
-        };
-        let base = self.enumerate(&binding);
+        let base = live.base.clone();
         if base.is_empty() {
             self.cancel();
             return;
         }
-        let candidates = rank_filter(base, &query);
+        let candidates = rank_filter(base.clone(), &query);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
             self.cancel();
             return;
         };
         selection.select(0);
         self.session = Some(Live {
+            base,
             candidates,
             selection,
             binding_idx,
@@ -861,8 +866,8 @@ impl App {
             return;
         }
         let candidates = match &filter {
-            Some(query) => rank_filter(base, query),
-            None => base,
+            Some(query) => rank_filter(base.clone(), query),
+            None => base.clone(),
         };
         if candidates.is_empty() {
             self.cancel();
@@ -871,6 +876,7 @@ impl App {
         let mut selection = model::Session::start(candidates.len()).unwrap();
         selection.select(selected.min(candidates.len() - 1));
         self.session = Some(Live {
+            base,
             candidates,
             selection,
             binding_idx,
