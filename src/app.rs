@@ -1272,7 +1272,11 @@ impl App {
         self.bindings = bindings;
         self.summon_delay_ms = cfg.summon_delay_ms.min(900);
         self.action_keys = ActionKeys::resolve(&cfg.keys);
+        let hover_changed = cfg.controls.hover_select != self.controls.hover_select;
         self.controls = cfg.controls.clone();
+        if hover_changed {
+            self.strip.set_hover_select(self.controls.hover_select);
+        }
         self.rules = config::to_model_rules(&cfg.rules);
         self.config = cfg;
 

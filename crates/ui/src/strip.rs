@@ -185,7 +185,10 @@ impl Metrics {
             title_font: (12.0 * s).clamp(10.0, 14.0),
             badge_font: (11.0 * s).clamp(9.0, 13.0),
             caption_icon: (16.0 * s).clamp(12.0, 20.0),
-            list_min_w: (LIST_MIN_W * s).max(80.0),
+            // The readability floor must never overtake the ceiling: `clamp`
+            // panics when min > max, and List densifies well past the point
+            // where the scaled maximum drops under 80 pt.
+            list_min_w: (LIST_MIN_W * s).max(80.0).min(LIST_MAX_W * s),
             list_max_w: LIST_MAX_W * s,
             query_h: (QUERY_H * s).clamp(20.0, 34.0),
             query_font: (13.0 * s).clamp(11.0, 16.0),
@@ -1722,6 +1725,40 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn list_width_bounds_never_invert() {
+        // `f64::clamp` panics if min > max. List densifies far below the
+        // readability floor, so walk every scale the ladder can pick.
+        let mut s = 1.6;
+        while s > 0.01 {
+            let m = Metrics::at(s);
+            assert!(
+                m.list_min_w <= m.list_max_w,
+                "inverted at scale {s}: min={} max={}",
+                m.list_min_w,
+                m.list_max_w
+            );
+            s -= 0.01;
+        }
+    }
+
+    #[test]
+    fn a_crowded_list_lays_out_without_panicking() {
+        // The reachable path: List + Auto + many windows on a short screen.
+        for &n in &[1usize, 40, 120, 300] {
+            let scale = size_scale(Size::Auto, Style::List, n, &[], 1280.0, 700.0);
+            let m = Metrics::at(scale);
+            let tiles: Vec<Tile> = (0..n)
+                .map(|i| Tile {
+                    title: format!("window {i} with a reasonably long title"),
+                    ..Tile::default()
+                })
+                .collect();
+            let w = list_content_width(&tiles, &m, TitleShow::Title, true);
+            assert!(w.is_finite() && w > 0.0, "n={n} produced width {w}");
         }
     }
 

@@ -414,6 +414,21 @@ theme = "dark"
         assert_eq!(cfg.lenses, default_lenses());
     }
 
+    /// TOML array-of-tables cannot distinguish "absent" from "empty", so an
+    /// omitted `[[rule]]` section means *no rules* rather than the shipped
+    /// defaults. That is deliberate: it keeps deleting the section a usable way
+    /// to say "none", and it keeps `parse(to_toml(c)) == c` true for a config
+    /// with no rules. A fresh install still gets the §4.7 defaults — they are
+    /// written into the first-run file, and `Config::default()` carries them
+    /// whenever no file exists.
+    #[test]
+    fn an_omitted_rule_section_means_no_rules_and_round_trips() {
+        let cfg = parse("theme = \"dark\"\n").unwrap();
+        assert!(cfg.rules.is_empty());
+        assert_eq!(parse(&to_toml(&cfg)).unwrap(), cfg);
+        assert_eq!(Config::default().rules, default_rules());
+    }
+
     #[test]
     fn empty_bundle_prefix_errors() {
         // starts_with("") is true for every app — this must never parse.
