@@ -118,6 +118,44 @@ mod tests {
         assert!(cache.shown(1).is_none());
     }
 
+    /// Payload identity, not just presence: a cache that returned the wrong
+    /// image for a window would satisfy every `is_some()` assertion above.
+    #[test]
+    fn shown_returns_that_window_s_payload() {
+        let mut cache = Cache::new(100);
+        for wid in [1, 2, 3] {
+            cache.insert(wid, format!("payload-{wid}"), 1);
+        }
+        assert_eq!(cache.shown(2).map(String::as_str), Some("payload-2"));
+        assert_eq!(cache.shown(1).map(String::as_str), Some("payload-1"));
+        assert_eq!(cache.shown(3).map(String::as_str), Some("payload-3"));
+    }
+
+    #[test]
+    fn refresh_replaces_the_payload() {
+        let mut cache = Cache::new(100);
+        cache.insert(7, "old".to_string(), 1);
+        cache.insert(7, "new".to_string(), 1);
+        assert_eq!(cache.shown(7).map(String::as_str), Some("new"));
+        assert_eq!(wids(&cache), [7], "a refresh must not duplicate the entry");
+    }
+
+    /// The budget is a hard ceiling on the *refresh* path too — growing an
+    /// existing entry has to evict just as an insert does.
+    #[test]
+    fn a_refresh_that_grows_past_the_budget_evicts() {
+        let mut cache = Cache::new(4);
+        cache.insert(1, "a".to_string(), 1);
+        cache.insert(2, "b".to_string(), 1);
+        cache.insert(3, "c".to_string(), 1);
+        assert_eq!(cache.used, 3);
+        // Grow the most-recent entry well past the budget.
+        cache.insert(3, "big".to_string(), 4);
+        assert!(cache.used <= 4, "budget broken: used={}", cache.used);
+        assert_eq!(cache.shown(3).map(String::as_str), Some("big"));
+        assert!(cache.shown(1).is_none(), "oldest should have been evicted");
+    }
+
     #[test]
     fn retain_forgets_dead_windows() {
         let mut cache = Cache::new(10);
