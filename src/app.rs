@@ -297,6 +297,9 @@ struct App {
     session: Option<Live>,
     bindings: Vec<Binding>,
     summon_delay_ms: u32,
+    /// When the current trigger fired, for the first-paint measurement.
+    #[cfg(debug_assertions)]
+    triggered_at: Option<std::time::Instant>,
     /// Bumped to cancel a pending apparition-delay reveal.
     show_epoch: u32,
     /// The in-session key tap, enabled only while a session is open.
@@ -346,6 +349,10 @@ impl App {
     fn trigger(&mut self, id: u32) {
         if self.paused {
             return;
+        }
+        #[cfg(debug_assertions)]
+        {
+            self.triggered_at = Some(std::time::Instant::now());
         }
         let (idx, backward) = lens::decode_hotkey_id(id);
         if idx >= self.bindings.len() {
@@ -456,6 +463,14 @@ impl App {
         live.shown = true;
         self.set_keys_enabled(true);
         self.render();
+        // PRD §8.2: first paint within ~33 ms of the trigger, warm cache.
+        // Measured from the hot key, so it covers enumeration and resolve too.
+        #[cfg(debug_assertions)]
+        if let Some(at) = self.triggered_at.take()
+            && std::env::var_os("ORIEL_TIME_PAINT").is_some()
+        {
+            println!("first-paint {:.1} ms", at.elapsed().as_secs_f64() * 1000.0);
+        }
     }
 
     /// A key was pressed while a session is open. Bound actions and Filter
@@ -1395,6 +1410,8 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         session: None,
         bindings,
         summon_delay_ms: cfg.summon_delay_ms.min(900),
+        #[cfg(debug_assertions)]
+        triggered_at: None,
         show_epoch: 0,
         keys: None,
         action_keys: ActionKeys::resolve(&cfg.keys),
