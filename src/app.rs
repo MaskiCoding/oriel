@@ -883,10 +883,15 @@ impl App {
             return false;
         };
         let bid = bid.to_owned();
-        let fullscreen = ax::focused_window(pid)
-            .and_then(|wid| ax::is_fullscreen(pid, wid))
-            .unwrap_or(false);
-        self.rules.passes_trigger(&bid, fullscreen)
+        // Only a `fullscreen` rule needs the AX round trip, and this runs on
+        // every app activation — skip it for the common no-rule case.
+        match self.rules.pass_mode(&bid) {
+            model::PassTriggers::Never => false,
+            model::PassTriggers::Always => true,
+            model::PassTriggers::Fullscreen => ax::focused_window(pid)
+                .and_then(|wid| ax::is_fullscreen(pid, wid))
+                .unwrap_or(false),
+        }
     }
 
     /// Register or drop Carbon hot keys so a pass-through frontmost app (or a

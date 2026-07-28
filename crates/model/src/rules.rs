@@ -105,6 +105,12 @@ impl Rules {
         }
     }
 
+    /// The pass mode for `bundle_id`, so a caller can avoid the cost of
+    /// deciding whether the app is fullscreen unless a rule actually asks.
+    pub fn pass_mode(&self, bundle_id: &str) -> PassTriggers {
+        self.best(bundle_id).map_or(PassTriggers::Never, |r| r.pass)
+    }
+
     pub fn passes_trigger(&self, bundle_id: &str, app_fullscreen: bool) -> bool {
         match self.best(bundle_id).map(|r| r.pass) {
             None | Some(PassTriggers::Never) => false,
@@ -200,6 +206,17 @@ mod tests {
         assert!(rules.should_hide("com.app.foo", "my secret note", true));
         assert!(rules.should_hide("com.app.foo", "a draft copy", true));
         assert!(!rules.should_hide("com.app.foo", "public note", true));
+    }
+
+    #[test]
+    fn pass_mode_reports_the_rule_without_asking_about_fullscreen() {
+        let rules = Rules::new(vec![
+            rule("com.a.", HideWindows::Never, PassTriggers::Always),
+            rule("com.b.", HideWindows::Never, PassTriggers::Fullscreen),
+        ]);
+        assert_eq!(rules.pass_mode("com.a.thing"), PassTriggers::Always);
+        assert_eq!(rules.pass_mode("com.b.thing"), PassTriggers::Fullscreen);
+        assert_eq!(rules.pass_mode("com.unknown"), PassTriggers::Never);
     }
 
     #[test]
