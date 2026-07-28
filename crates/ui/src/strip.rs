@@ -140,7 +140,6 @@ fn as_f64(n: usize) -> f64 {
 /// Tile metrics at a given scale. Scale 1.0 matches the Medium Gallery constants.
 #[derive(Clone, Copy)]
 struct Metrics {
-    scale: f64,
     preview_h: f64,
     caption_h: f64,
     icon: f64,
@@ -167,7 +166,6 @@ impl Metrics {
     fn at(scale: f64) -> Self {
         let s = scale;
         Self {
-            scale: s,
             preview_h: PREVIEW_H * s,
             caption_h: CAPTION_H * s,
             icon: ICON * s,
@@ -207,10 +205,12 @@ impl Metrics {
         self.icons_icon + ICONS_GAP + self.caption_h + 2.0 * self.inset
     }
 
+    /// Row height must follow the **clamped** caption metrics the row actually
+    /// draws with. Recomputing them raw makes the row shorter than its own
+    /// contents once List densifies past the clamp floors.
     fn list_row_h(&self) -> f64 {
-        let icon = 16.0 * self.scale;
-        let line = 12.0 * self.scale + 5.0 * self.scale;
-        icon.max(line) + 2.0 * self.list_pad_y
+        let line = self.title_font + 5.0;
+        self.caption_icon.max(line) + 2.0 * self.list_pad_y
     }
 
     /// Extra panel height when the filter query row is visible (row + gap).
@@ -410,6 +410,7 @@ fn panel_fits(
                 m.list_gap,
                 m.list_pad,
                 0.0,
+                screen_h,
             )
         }
     };
@@ -538,11 +539,18 @@ fn layout_sized(
     }
 }
 
+/// Usable screen box the strip must fit inside.
+#[derive(Clone, Copy)]
+struct Screen {
+    w: f64,
+    h: f64,
+}
+
 fn plan(
     tiles: &[Tile],
     style: Style,
     m: &Metrics,
-    screen_w: f64,
+    screen: Screen,
     query_space: f64,
     show: TitleShow,
     markers: bool,
@@ -553,7 +561,7 @@ fn plan(
                 .iter()
                 .map(|t| gallery_tile_width(t.aspect, m))
                 .collect();
-            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
+            let max_content = (screen.w * 0.9 - 2.0 * m.pad).max(m.min_w);
             layout_sized(
                 &widths,
                 max_content,
@@ -566,7 +574,7 @@ fn plan(
         Style::Icons => {
             let tw = m.icons_tile_w();
             let widths = vec![tw; tiles.len()];
-            let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(tw);
+            let max_content = (screen.w * 0.9 - 2.0 * m.pad).max(tw);
             layout_sized(
                 &widths,
                 max_content,
@@ -583,24 +591,55 @@ fn plan(
             m.list_gap,
             m.list_pad,
             query_space,
+            screen.h,
         ),
     }
 }
 
-fn list_layout(n: usize, row_w: f64, row_h: f64, gap: f64, pad: f64, query_space: f64) -> Layout {
-    let count = as_f64(n);
-    let width = row_w + 2.0 * pad;
-    let height = if n == 0 {
-        2.0 * pad + query_space
-    } else {
-        count.mul_add(row_h, (count - 1.0) * gap) + 2.0 * pad + query_space
-    };
+/// List rows down a column, wrapping into further columns when one column
+/// would run past `max_h`. The strip never scrolls (PRD §4.6), and the caption
+/// metrics have clamp floors, so past a certain count height alone cannot give.
+fn list_layout(
+    n: usize,
+    row_w: f64,
+    row_h: f64,
+    gap: f64,
+    pad: f64,
+    query_space: f64,
+    max_h: f64,
+) -> Layout {
+    if n == 0 {
+        return Layout {
+            origins: Vec::new(),
+            rows: Vec::new(),
+            width: row_w + 2.0 * pad,
+            height: 2.0 * pad + query_space,
+        };
+    }
+    let usable = (max_h - 2.0 * pad - query_space).max(row_h);
+    // How many rows fit in one column: k*row_h + (k-1)*gap <= usable.
+    // Rows that fit one column: k*row_h + (k-1)*gap <= usable. Counted by
+    // stepping rather than casting a float, so no truncation or sign games.
+    let mut per_col = 1;
+    while per_col < n && as_f64(per_col + 1).mul_add(row_h, as_f64(per_col) * gap) <= usable {
+        per_col += 1;
+    }
+    let cols = n.div_ceil(per_col);
+    let rows_used = per_col.min(n);
+
+    let count = as_f64(rows_used);
+    let width = as_f64(cols).mul_add(row_w, as_f64(cols - 1) * gap) + 2.0 * pad;
+    let height = count.mul_add(row_h, (count - 1.0) * gap) + 2.0 * pad + query_space;
+
     let mut origins = Vec::with_capacity(n);
-    let mut rows = Vec::with_capacity(n);
-    for i in 0..n {
-        let y = height - pad - query_space - as_f64(i + 1) * row_h - as_f64(i) * gap;
-        origins.push((pad, y));
-        rows.push(vec![i]);
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new(); rows_used];
+    for (i, slot) in (0..n).enumerate() {
+        let col = slot / per_col;
+        let row = slot % per_col;
+        let x = pad + as_f64(col) * (row_w + gap);
+        let y = height - pad - query_space - as_f64(row + 1) * row_h - as_f64(row) * gap;
+        origins.push((x, y));
+        rows[row].push(i);
     }
     Layout {
         origins,
@@ -1127,7 +1166,10 @@ impl Strip {
             tiles,
             look.style,
             &m,
-            screen_w,
+            Screen {
+                w: screen_w,
+                h: screen_h,
+            },
             query_space,
             look.title_show,
             look.markers,
@@ -1701,7 +1743,7 @@ mod tests {
         assert!(long > short);
         assert!(long <= m.list_max_w);
         assert!(short >= m.list_min_w);
-        let plan = list_layout(9, long, row, m.list_gap, m.list_pad, 0.0);
+        let plan = list_layout(9, long, row, m.list_gap, m.list_pad, 0.0, 900.0);
         // Nine dense rows fit a laptop-height screen with room to spare.
         assert!(plan.height < 900.0);
     }
@@ -1725,6 +1767,24 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_list_row_always_fits_what_it_draws() {
+        // The caption's icon and font are clamped, so the row must be measured
+        // from the clamped values, not from raw scale.
+        let mut s = 1.6;
+        while s > 0.01 {
+            let m = Metrics::at(s);
+            let drawn = m.caption_icon.max(m.title_font + 5.0);
+            assert!(
+                m.list_row_h() >= drawn,
+                "row {} shorter than its contents {} at scale {s}",
+                m.list_row_h(),
+                drawn
+            );
+            s -= 0.01;
         }
     }
 
@@ -1877,7 +1937,7 @@ mod tests {
 
     #[test]
     fn list_layout_is_a_single_column() {
-        let plan = list_layout(3, 280.0, 30.0, 4.0, 12.0, 0.0);
+        let plan = list_layout(3, 280.0, 30.0, 4.0, 12.0, 0.0, 900.0);
         assert_eq!(plan.width, 280.0 + 24.0);
         assert_eq!(plan.origins.len(), 3);
         assert_eq!(plan.origins[0].0, plan.origins[1].0);
