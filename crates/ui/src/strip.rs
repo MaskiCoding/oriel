@@ -10,19 +10,21 @@ use objc2::{
     msg_send,
 };
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSEvent, NSFont, NSFontAttributeName,
     NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSLineBreakMode,
     NSMutableParagraphStyle, NSPanel, NSParagraphStyleAttributeName, NSPopUpMenuWindowLevel,
     NSRunningApplication, NSScreen, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{
-    NSMutableAttributedString, NSObjectProtocol, NSPoint, NSPointInRect, NSRange, NSRect, NSSize,
-    NSString,
+    NSArray, NSMutableAttributedString, NSNumber, NSObjectProtocol, NSPoint, NSPointInRect,
+    NSRange, NSRect, NSSize, NSString,
 };
 use objc2_quartz_core::kCAGravityResizeAspect;
+use objc2_quartz_core::{CABasicAnimation, CAGradientLayer, CAMediaTiming, CAMediaTimingFunction};
 
 use crate::look::{Look, ShowOn, Size, Style, Theme, TitleShow, TitleTruncate};
 
@@ -766,6 +768,11 @@ fn mouse_location() -> NSPoint {
     unsafe { msg_send![class!(NSEvent), mouseLocation] }
 }
 
+/// `CoreAnimation` wants gradient stops as boxed numbers.
+fn stops(a: f64, b: f64, c: f64) -> Vec<Retained<NSNumber>> {
+    [a, b, c].iter().map(|v| NSNumber::new_f64(*v)).collect()
+}
+
 fn system_appearance_is_dark() -> bool {
     // SAFETY: AppKit singletons; `name` is an NSString.
     let app: Retained<AnyObject> = unsafe { msg_send![class!(NSApplication), sharedApplication] };
@@ -1045,6 +1052,7 @@ pub struct Strip {
     mtm: MainThreadMarker,
     panel: Retained<NSPanel>,
     content: Retained<StripContentView>,
+    glass: Retained<NSVisualEffectView>,
     tiles: RefCell<Vec<Retained<NSView>>>,
     selected: Cell<usize>,
     /// Which tiles are lit, parallel to `tiles` — `select` restyles from views
@@ -1098,15 +1106,31 @@ impl Strip {
         if let Some(layer) = content.layer() {
             layer.setCornerRadius(18.0);
             layer.setMasksToBounds(true);
-            let backing = NSColor::colorWithWhite_alpha(0.12, 0.94).CGColor();
-            layer.setBackgroundColor(Some(&backing));
+            // Transparent: the vibrancy view behind the tiles is the background.
+            layer.setBackgroundColor(None);
+            layer.setBorderWidth(1.0);
         }
+
+        // Real vibrancy rather than a flat fill — the strip picks up what is
+        // behind it the way the Dock does. Added before any tile so it stays at
+        // the bottom, and sized with the view so a re-plan cannot leave a seam.
+        let glass = NSVisualEffectView::new(mtm);
+        glass.setMaterial(NSVisualEffectMaterial::HUDWindow);
+        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        glass.setState(NSVisualEffectState::Active);
+        glass.setFrame(content.bounds());
+        glass.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        content.addSubview(&glass);
         panel.setContentView(Some(&content));
 
         Self {
             mtm,
             panel,
             content,
+            glass,
             tiles: RefCell::new(Vec::new()),
             selected: Cell::new(0),
             lit: RefCell::new(Vec::new()),
@@ -1373,15 +1397,22 @@ impl Strip {
         }
     }
 
+    /// Vibrancy carries the background, so the theme only sets the hairline
+    /// edge that separates the panel from whatever it is floating over.
     fn apply_theme(&self, dark: bool) {
         if let Some(layer) = self.content.layer() {
-            let backing = if dark {
-                NSColor::colorWithWhite_alpha(0.12, 0.94).CGColor()
+            let edge = if dark {
+                NSColor::colorWithWhite_alpha(1.0, 0.16)
             } else {
-                NSColor::colorWithWhite_alpha(0.96, 0.94).CGColor()
+                NSColor::colorWithWhite_alpha(0.0, 0.12)
             };
-            layer.setBackgroundColor(Some(&backing));
+            layer.setBorderColor(Some(&edge.CGColor()));
         }
+        self.glass.setMaterial(if dark {
+            NSVisualEffectMaterial::HUDWindow
+        } else {
+            NSVisualEffectMaterial::Popover
+        });
     }
 
     fn target_screen(&self, show_on: ShowOn) -> Option<Retained<NSScreen>> {
@@ -1440,19 +1471,61 @@ impl Strip {
             Style::List => self.list_tile(tile, m, dark),
         };
         if tile.lantern {
-            // The preview is opaque, so tinting behind it would only colour the
-            // margins. The light has to fall on the glass: a rose pane laid over
-            // the whole tile, which the corner radius clips to shape.
-            let glass = NSView::initWithFrame(self.mtm.alloc(), view.bounds());
-            glass.setWantsLayer(true);
-            if let Some(layer) = glass.layer() {
-                layer.setBackgroundColor(Some(
-                    &lantern_color().colorWithAlphaComponent(0.22).CGColor(),
-                ));
-            }
-            view.addSubview(&glass);
+            view.addSubview(&self.lantern_glass(view.bounds()));
         }
         view
+    }
+
+    /// The light on the glass: a dim warm gradient laid over the whole tile,
+    /// drifting slowly so a working window reads as alive without ever asking
+    /// to be looked at. The corner radius clips it to the tile's shape.
+    ///
+    /// This is the one thing in the strip that moves. It earns it: stillness is
+    /// what tells you a window is finished, so the difference has to be motion.
+    fn lantern_glass(&self, bounds: NSRect) -> Retained<NSView> {
+        let glass = NSView::initWithFrame(self.mtm.alloc(), bounds);
+        glass.setWantsLayer(true);
+        let gradient = CAGradientLayer::new();
+        gradient.setFrame(bounds);
+
+        // `colors` holds CGColorRefs, which are CoreFoundation rather than
+        // ObjC, so the array is filled by hand rather than through NSArray's
+        // typed constructor.
+        let warm = NSColor::colorWithSRGBRed_green_blue_alpha(0.98, 0.74, 0.58, 0.15);
+        let rose = lantern_color().colorWithAlphaComponent(0.17);
+        let pale = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.98, 0.94, 0.02);
+        let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
+        for color in [warm, rose, pale] {
+            let cg = color.CGColor();
+            let ptr: *const AnyObject = (&raw const *cg).cast();
+            let _: () = unsafe { msg_send![&*colors, addObject: ptr] };
+        }
+        unsafe {
+            let _: () = msg_send![&*gradient, setColors: &*colors];
+            let _: () = msg_send![&*gradient, setStartPoint: NSPoint::new(0.0, 1.0)];
+            let _: () = msg_send![&*gradient, setEndPoint: NSPoint::new(1.0, 0.0)];
+        }
+        gradient.setLocations(Some(&NSArray::from_retained_slice(&stops(0.0, 0.45, 1.0))));
+
+        let drift = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("locations")));
+        // SAFETY: both values are gradient-stop arrays, which is what the
+        // `locations` key path expects.
+        unsafe {
+            drift.setFromValue(Some(&NSArray::from_retained_slice(&stops(-0.7, 0.0, 0.6))));
+            drift.setToValue(Some(&NSArray::from_retained_slice(&stops(0.4, 1.0, 1.7))));
+        }
+        drift.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
+            &NSString::from_str("easeInEaseOut"),
+        )));
+        drift.setDuration(5.5);
+        drift.setAutoreverses(true);
+        drift.setRepeatCount(f32::INFINITY);
+        gradient.addAnimation_forKey(&drift, Some(&NSString::from_str("lantern")));
+
+        if let Some(host) = glass.layer() {
+            host.addSublayer(&gradient);
+        }
+        glass
     }
 
     /// Gallery: caption row on top, preview (or large icon) below.

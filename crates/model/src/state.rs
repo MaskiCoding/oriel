@@ -10,12 +10,22 @@ const TAG_MINIMIZED: u64 = 1 << 60;
 const TAG_APP_HIDDEN: u64 = 1 << 39;
 /// Set in `attributes` while the window is ordered in on its Space.
 const ATTR_ON_SCREEN: u64 = 0x2;
+/// Set in `tags` on windows that belong to the user rather than the system.
+/// Every real window carries it; the chrome the `WindowServer` conjures does
+/// not — notably the 1800x52 title strip an app gets while it is fullscreen,
+/// which is otherwise a level-0, on-screen, perfectly switchable-looking
+/// window that renders as an absurd 34:1 tile.
+const TAG_USER_WINDOW: u64 = 1 << 0;
 
+// Four independent bits decoded straight from the WindowServer; grouping them
+// into sub-structs would obscure that they are one flat set of flags.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowState {
     pub minimized: bool,
     pub hidden: bool,
     on_screen: bool,
+    user: bool,
 }
 
 impl WindowState {
@@ -24,6 +34,7 @@ impl WindowState {
             minimized: tags & TAG_MINIMIZED != 0,
             hidden: tags & TAG_APP_HIDDEN != 0,
             on_screen: attributes & ATTR_ON_SCREEN != 0,
+            user: tags & TAG_USER_WINDOW != 0,
         }
     }
 
@@ -31,7 +42,7 @@ impl WindowState {
     /// reason the user meant (minimized, app hidden). Anything else in the
     /// enumeration is `WindowServer` residue.
     pub fn switchable(self) -> bool {
-        self.on_screen || self.minimized || self.hidden
+        self.user && (self.on_screen || self.minimized || self.hidden)
     }
 
     /// Frame large enough to be a real tile. Rejects 0×0 / 1×1 helper windows
@@ -84,6 +95,9 @@ mod tests {
     const MINIMIZED: (u64, u64) = (0x1300_0001_0048_0001, 0x1);
     const HIDDEN: (u64, u64) = (0x0300_0081_0008_0401, 0x1);
     const GHOST: (u64, u64) = (0x0300_0001_0048_0001, 0x1);
+    /// The title strip macOS adds beside a fullscreen window, measured from a
+    /// fullscreen Finder: level 0, on screen, and 1800x52.
+    const FULLSCREEN_CHROME: (u64, u64) = (0x0804_0401_400c_2080, 0x3);
 
     #[test]
     fn on_screen_window_is_switchable() {
@@ -154,5 +168,21 @@ mod tests {
         assert_eq!(WindowState::tile_title(None, Some(""), "App"), "App");
         assert_eq!(WindowState::tile_title(None, None, "App"), "App");
         assert_eq!(WindowState::tile_title(None, None, ""), "");
+    }
+
+    #[test]
+    fn the_chrome_beside_a_fullscreen_window_is_not_switchable() {
+        let state = WindowState::decode(FULLSCREEN_CHROME.0, FULLSCREEN_CHROME.1);
+        assert!(
+            !state.switchable(),
+            "the fullscreen title strip must never reach the strip"
+        );
+    }
+
+    #[test]
+    fn every_real_window_shape_still_switches() {
+        for (tags, attrs) in [NORMAL, MINIMIZED, HIDDEN] {
+            assert!(WindowState::decode(tags, attrs).switchable());
+        }
     }
 }
