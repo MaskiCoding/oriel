@@ -67,6 +67,17 @@ fn debug_command(flag: &str, args: &mut impl Iterator<Item = String>) -> bool {
             let raised = ax::raise_window(pid, wid);
             println!("focus {wid} pid {pid}: fronted={fronted} raised={raised}");
         }
+        "--activate" => {
+            let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
+            let ok =
+                objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                    .map(|app| {
+                        app.activateWithOptions(
+                            objc2_app_kit::NSApplicationActivationOptions::ActivateAllWindows,
+                        )
+                    });
+            println!("activate {pid}: {ok:?}");
+        }
         "--focused-wid" => {
             let pid: i32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
             println!("{}", ax::focused_window(pid).unwrap_or(0));

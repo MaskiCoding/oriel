@@ -163,7 +163,17 @@ fn focus_with_retry(f: &Focus, pid: i32, wid: u32, attempts_left: u32) {
         return;
     }
     f.ws.focus_window(pid, wid);
-    if ax::raise_window(pid, wid) || attempts_left == 0 {
+    if ax::raise_window(pid, wid) {
+        return;
+    }
+    // A per-window raise is refused outright while the front Space belongs to a
+    // fullscreen app: the WindowServer will not leave that Space for one window.
+    // AppKit activation does leave it — measured — so ask for that and let the
+    // retry put the intended window on top once we are back on a desktop.
+    // Without this the strip appears over a fullscreen app, takes the pick, and
+    // strands the user exactly where they started.
+    activate_pid(pid);
+    if attempts_left == 0 {
         return;
     }
     let f = f.clone();
