@@ -12,4 +12,4 @@ workspace = true
 [dependencies]
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
-skylight-sys = { version = "0.1.0", path = "../skylight-sys" }
+skylight-sys = { path = "../skylight-sys" }
