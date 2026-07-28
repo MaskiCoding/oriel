@@ -1,11 +1,10 @@
 //! Full window snapshot for the lens resolver: MRU-ordered `model::Window`
 //! records plus the pid/aspect/badge metadata the UI layer still needs.
-#![allow(dead_code)] // public API; summon path wires it in a later task
 
 use std::collections::{HashMap, HashSet};
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplicationActivationPolicy, NSScreen, NSWorkspace};
+use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSScreen, NSWorkspace};
 
 /// Parallel lookup for the pid/aspect/badge the UI layer needs, keyed by window id.
 pub struct Meta {
@@ -110,7 +109,44 @@ fn windowless_apps(owned: &HashSet<i32>) -> Vec<(i32, String)> {
     out
 }
 
+/// Bundle ID for `pid`, cached across summons. `None` means a bare executable
+/// with no bundle — it matches no prefix rule.
+pub fn bundle_id(pid: i32, cache: &mut HashMap<i32, Option<String>>) -> Option<&str> {
+    cache.entry(pid).or_insert_with(|| {
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .and_then(|app| app.bundleIdentifier())
+            .map(|s| s.to_string())
+    });
+    cache.get(&pid).and_then(Option::as_deref)
+}
+
+fn hidden_by_rule(
+    rules: &model::Rules,
+    bundles: &mut HashMap<i32, Option<String>>,
+    pid: i32,
+    title: &str,
+    has_open_window: bool,
+) -> bool {
+    let Some(bid) = bundle_id(pid, bundles) else {
+        return false;
+    };
+    rules.should_hide(bid, title, has_open_window)
+}
+
+/// Debug / warm path without a live rules handle — applies shipped defaults.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn snapshot(ws: &winsrv::WindowServer, mru: &mut model::Mru) -> Snapshot {
+    let rules = model::Rules::defaults();
+    let mut bundles = HashMap::new();
+    snapshot_with(ws, mru, &rules, &mut bundles)
+}
+
+pub fn snapshot_with(
+    ws: &winsrv::WindowServer,
+    mru: &mut model::Mru,
+    rules: &model::Rules,
+    bundles: &mut HashMap<i32, Option<String>>,
+) -> Snapshot {
     let spaces = ws.spaces();
     let map = model::SpaceMap::new(spaces.iter().map(|s| model::SpaceDesc {
         id: s.id,
@@ -139,7 +175,13 @@ pub fn snapshot(ws: &winsrv::WindowServer, mru: &mut model::Mru) -> Snapshot {
     let mut owned_pids = HashSet::new();
 
     for w in ordered {
+        // Count the app as window-owning even when every window is filtered out,
+        // so we do not invent a windowless tile for it below.
         owned_pids.insert(w.pid);
+        let title = w.title.clone().unwrap_or_default();
+        if hidden_by_rule(rules, bundles, w.pid, &title, true) {
+            continue;
+        }
         let state = model::WindowState::decode(w.tags, w.attributes);
         let space = if map.uniform() {
             None
@@ -161,7 +203,7 @@ pub fn snapshot(ws: &winsrv::WindowServer, mru: &mut model::Mru) -> Snapshot {
             id,
             app: w.pid,
             app_name: w.app.unwrap_or_default(),
-            title: w.title.unwrap_or_default(),
+            title,
             state,
             fullscreen: mark.is_some_and(|m| m.fullscreen),
             space,
@@ -176,6 +218,9 @@ pub fn snapshot(ws: &winsrv::WindowServer, mru: &mut model::Mru) -> Snapshot {
     }
 
     for (pid, app_name) in windowless_apps(&owned_pids) {
+        if hidden_by_rule(rules, bundles, pid, "", false) {
+            continue;
+        }
         let id = windowless_id(pid);
         meta.insert(
             id,

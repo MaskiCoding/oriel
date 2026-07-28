@@ -43,6 +43,7 @@ dispatch2 = "0.3.1"
 input = { version = "0.1.0", path = "crates/input" }
 model = { version = "0.1.0", path = "crates/model" }
 muda = { version = "0.19", default-features = false }
+notify = "8"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSBitmapImageRep", "NSResponder", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace", "libc"] }
 objc2-core-foundation = "0.3.2"
