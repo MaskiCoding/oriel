@@ -3,9 +3,11 @@ lint:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
 
-# the full gate, run by ci: lint + tests
+# the full gate: lint + tests + the release compile. Debug-only code is
+# #[cfg]-gated, so only a release build catches a stray call into it.
 check: lint
     cargo test --workspace
+    cargo build --release
 
 # point local git at the committed hooks
 hooks:
