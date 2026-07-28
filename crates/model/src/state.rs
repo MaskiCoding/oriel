@@ -33,7 +33,29 @@ impl WindowState {
     pub fn switchable(self) -> bool {
         self.on_screen || self.minimized || self.hidden
     }
+
+    /// Frame large enough to be a real tile. Rejects 0×0 / 1×1 helper windows
+    /// from Electron and overlay toolkits; 2 pt on both edges still lets a
+    /// genuine tiny utility through.
+    pub fn meets_min_size(width: f64, height: f64) -> bool {
+        width >= MIN_TILE_EDGE && height >= MIN_TILE_EDGE
+    }
+
+    /// Caption for a tile: AX title → `WindowServer` title → app name. Never
+    /// empty when `app_name` is non-empty.
+    pub fn tile_title(ax_title: Option<&str>, ws_title: Option<&str>, app_name: &str) -> String {
+        for raw in [ax_title, ws_title].into_iter().flatten() {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_owned();
+            }
+        }
+        app_name.to_owned()
+    }
 }
+
+/// Smallest edge (points) still accepted as a switchable window frame.
+const MIN_TILE_EDGE: f64 = 2.0;
 
 /// The marker text for a tile: minimized ●, fullscreen ⤢, and the Desktop
 /// number when the window lives on another user Space. Empty means no chip.
@@ -98,5 +120,35 @@ mod tests {
         assert_eq!(badge(false, true, None), "⤢");
         assert_eq!(badge(false, false, Some(3)), "3");
         assert_eq!(badge(true, false, Some(2)), "● 2");
+    }
+
+    #[test]
+    fn min_size_rejects_helper_stubs() {
+        assert!(!WindowState::meets_min_size(0.0, 0.0));
+        assert!(!WindowState::meets_min_size(1.0, 1.0));
+        assert!(!WindowState::meets_min_size(1.0, 100.0));
+        assert!(!WindowState::meets_min_size(100.0, 1.0));
+    }
+
+    #[test]
+    fn min_size_keeps_small_utilities() {
+        assert!(WindowState::meets_min_size(2.0, 2.0));
+        assert!(WindowState::meets_min_size(32.0, 24.0));
+        assert!(WindowState::meets_min_size(200.0, 40.0));
+    }
+
+    #[test]
+    fn tile_title_falls_back_ax_then_ws_then_app() {
+        assert_eq!(
+            WindowState::tile_title(Some(" AX "), Some("WS"), "App"),
+            "AX"
+        );
+        assert_eq!(
+            WindowState::tile_title(Some("  "), Some(" WS "), "App"),
+            "WS"
+        );
+        assert_eq!(WindowState::tile_title(None, Some(""), "App"), "App");
+        assert_eq!(WindowState::tile_title(None, None, "App"), "App");
+        assert_eq!(WindowState::tile_title(None, None, ""), "");
     }
 }

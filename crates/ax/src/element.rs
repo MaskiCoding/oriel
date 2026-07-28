@@ -6,6 +6,10 @@ use objc2_core_foundation::{CFArray, CFRetained, CFString};
 pub(crate) type AxRef = *const c_void;
 pub(crate) const AX_SUCCESS: i32 = 0;
 
+/// Caps how long a hung app can block an AX call (~1 s). Beach-balling targets
+/// otherwise stall the whole raise/focus pipeline.
+const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.0;
+
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     pub(crate) fn AXUIElementCreateApplication(pid: i32) -> AxRef;
@@ -20,6 +24,7 @@ unsafe extern "C" {
         value: *const c_void,
     ) -> i32;
     pub(crate) fn AXUIElementPerformAction(element: AxRef, action: *const c_void) -> i32;
+    pub(crate) fn AXUIElementSetMessagingTimeout(element: AxRef, timeout_in_seconds: f32) -> i32;
     pub(crate) fn _AXUIElementGetWindow(element: AxRef, wid: *mut u32) -> i32;
     pub(crate) fn CFRelease(cf: *const c_void);
 }
@@ -30,7 +35,11 @@ pub(crate) fn as_ptr(s: &CFString) -> *const c_void {
 
 /// Finds the AX element for window `wid` among `app`'s `AXWindows` and runs
 /// `f` while the windows array (and thus the element) is still retained.
+/// Returns `None` on AX error, empty `AXWindows`, or no matching id — never retries.
 pub(crate) fn with_window<R>(app: AxRef, wid: u32, f: impl FnOnce(AxRef) -> R) -> Option<R> {
+    unsafe {
+        AXUIElementSetMessagingTimeout(app, AX_MESSAGING_TIMEOUT_SECS);
+    }
     let windows_attr = CFString::from_str("AXWindows");
     let mut value: *const c_void = core::ptr::null();
     let err = unsafe { AXUIElementCopyAttributeValue(app, as_ptr(&windows_attr), &raw mut value) };
@@ -40,6 +49,9 @@ pub(crate) fn with_window<R>(app: AxRef, wid: u32, f: impl FnOnce(AxRef) -> R) -
         return None;
     }
     let windows: CFRetained<CFArray> = unsafe { CFRetained::from_raw(value.cast()) };
+    if windows.count() == 0 {
+        return None;
+    }
     for i in 0..windows.count() {
         let element = unsafe { windows.value_at_index(i) };
         if element.is_null() {
