@@ -31,9 +31,17 @@ fn install_event_bridge() {
                 return;
             };
             DispatchQueue::main().exec_async(move || {
+                // Take the callback out before invoking it: a command can
+                // rebuild or drop the status item, and both re-borrow this
+                // cell. Holding the guard across the call would panic.
+                let taken = ON_COMMAND.with(|slot| slot.borrow_mut().take());
+                let Some(mut cb) = taken else { return };
+                cb(cmd);
                 ON_COMMAND.with(|slot| {
-                    if let Some(cb) = slot.borrow_mut().as_mut() {
-                        cb(cmd);
+                    let mut slot = slot.borrow_mut();
+                    // Only restore if the command did not install or clear one.
+                    if slot.is_none() {
+                        *slot = Some(cb);
                     }
                 });
             });
