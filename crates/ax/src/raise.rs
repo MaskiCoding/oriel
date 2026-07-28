@@ -4,8 +4,8 @@ use core::ptr::NonNull;
 use objc2_core_foundation::{CFString, kCFBooleanFalse};
 
 use crate::element::{
-    _AXUIElementGetWindow, AX_SUCCESS, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementPerformAction, AXUIElementSetAttributeValue, AxRef, CFRelease, as_ptr, with_window,
+    _AXUIElementGetWindow, AX_SUCCESS, AXUIElementCopyAttributeValue, AXUIElementPerformAction,
+    AXUIElementSetAttributeValue, AxRef, CFRelease, app_element, as_ptr, with_window,
 };
 
 /// De-minimizes (if needed) and raises window `wid` of process `pid` to the
@@ -14,10 +14,9 @@ use crate::element::{
 /// behind — and can't reach a minimized one at all; this handles both. Needs
 /// Accessibility trust.
 pub fn raise_window(pid: i32, wid: u32) -> bool {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = app_element(pid) else {
         return false;
-    }
+    };
     let raised = raise_matching(app, wid);
     unsafe { CFRelease(app) };
     raised
@@ -27,10 +26,7 @@ pub fn raise_window(pid: i32, wid: u32) -> bool {
 /// lets us record where the user actually is, however they got there (a click,
 /// an app's own shortcut), not just Oriel's own switches.
 pub fn focused_window(pid: i32) -> Option<u32> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
+    let app = app_element(pid)?;
     let wid = focused_wid(app);
     unsafe { CFRelease(app) };
     wid

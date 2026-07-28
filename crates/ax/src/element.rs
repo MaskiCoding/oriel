@@ -33,13 +33,22 @@ pub(crate) fn as_ptr(s: &CFString) -> *const c_void {
     core::ptr::from_ref(s).cast()
 }
 
+/// An application element with the messaging timeout already applied. Every
+/// entry point must go through this: a beach-balling app otherwise blocks the
+/// caller indefinitely, and these run on the focus and summon paths.
+pub(crate) fn app_element(pid: i32) -> Option<AxRef> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return None;
+    }
+    unsafe { AXUIElementSetMessagingTimeout(app, AX_MESSAGING_TIMEOUT_SECS) };
+    Some(app)
+}
+
 /// Finds the AX element for window `wid` among `app`'s `AXWindows` and runs
 /// `f` while the windows array (and thus the element) is still retained.
 /// Returns `None` on AX error, empty `AXWindows`, or no matching id — never retries.
 pub(crate) fn with_window<R>(app: AxRef, wid: u32, f: impl FnOnce(AxRef) -> R) -> Option<R> {
-    unsafe {
-        AXUIElementSetMessagingTimeout(app, AX_MESSAGING_TIMEOUT_SECS);
-    }
     let windows_attr = CFString::from_str("AXWindows");
     let mut value: *const c_void = core::ptr::null();
     let err = unsafe { AXUIElementCopyAttributeValue(app, as_ptr(&windows_attr), &raw mut value) };

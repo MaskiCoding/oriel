@@ -4,17 +4,16 @@ use core::ptr::NonNull;
 use objc2_core_foundation::{CFBoolean, CFRetained, CFString, kCFBooleanFalse, kCFBooleanTrue};
 
 use crate::element::{
-    AX_SUCCESS, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementPerformAction, AXUIElementSetAttributeValue, AxRef, CFRelease, as_ptr, with_window,
+    AX_SUCCESS, AXUIElementCopyAttributeValue, AXUIElementPerformAction,
+    AXUIElementSetAttributeValue, AxRef, CFRelease, app_element, as_ptr, with_window,
 };
 
 /// Presses the window's close button via Accessibility. Returns false if the
 /// window, button, or press action is unavailable.
 pub fn close_window(pid: i32, wid: u32) -> bool {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = app_element(pid) else {
         return false;
-    }
+    };
     let closed = with_window(app, wid, close_element).unwrap_or(false);
     unsafe { CFRelease(app) };
     closed
@@ -54,40 +53,32 @@ pub fn is_fullscreen(pid: i32, wid: u32) -> Option<bool> {
 }
 
 pub fn set_app_hidden(pid: i32, hidden: bool) -> bool {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = app_element(pid) else {
         return false;
-    }
+    };
     let ok = set_bool_attr(app, "AXHidden", hidden);
     unsafe { CFRelease(app) };
     ok
 }
 
 pub fn is_app_hidden(pid: i32) -> Option<bool> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
+    let app = app_element(pid)?;
     let value = get_bool_attr(app, "AXHidden");
     unsafe { CFRelease(app) };
     value
 }
 
 fn set_window_bool(pid: i32, wid: u32, attr: &str, value: bool) -> bool {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
+    let Some(app) = app_element(pid) else {
         return false;
-    }
+    };
     let ok = with_window(app, wid, |element| set_bool_attr(element, attr, value)).unwrap_or(false);
     unsafe { CFRelease(app) };
     ok
 }
 
 fn get_window_bool(pid: i32, wid: u32, attr: &str) -> Option<bool> {
-    let app = unsafe { AXUIElementCreateApplication(pid) };
-    if app.is_null() {
-        return None;
-    }
+    let app = app_element(pid)?;
     let value = with_window(app, wid, |element| get_bool_attr(element, attr)).flatten();
     unsafe { CFRelease(app) };
     value
