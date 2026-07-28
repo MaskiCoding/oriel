@@ -13,11 +13,15 @@ const DEBOUNCE: Duration = Duration::from_millis(250);
 /// configs to `on_config`. Parse failures are printed and ignored so a bad
 /// mid-edit save cannot take down the running app. Spawns a background thread;
 /// the watch lives for the process lifetime.
+/// Losing the watch costs hot reload, not the app — say so and carry on.
 pub fn spawn(path: PathBuf, on_config: impl Fn(config::Config) + Send + 'static) {
-    std::thread::Builder::new()
+    if std::thread::Builder::new()
         .name("oriel-config".into())
         .spawn(move || watch_loop(&path, on_config))
-        .expect("spawn config watcher");
+        .is_err()
+    {
+        println!("config: could not start the reload watch — edits need a restart");
+    }
 }
 
 fn watch_loop(path: &Path, on_config: impl Fn(config::Config)) {
