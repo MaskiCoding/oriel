@@ -181,7 +181,7 @@ fn switchable(w: &winsrv::WindowInfo) -> bool {
 fn warp_cursor_to_window(ws: &winsrv::WindowServer, wid: u32, mode: config::CursorFollowsFocus) {
     use config::CursorFollowsFocus::{Never, OtherScreen};
 
-    if matches!(mode, Never) || wid & 0x8000_0000 != 0 {
+    if matches!(mode, Never) || crate::snapshot::is_windowless(wid) {
         return;
     }
     let space_ids: Vec<u64> = ws.spaces().iter().map(|s| s.id).collect();
@@ -201,6 +201,15 @@ fn warp_cursor_to_window(ws: &winsrv::WindowServer, wid: u32, mode: config::Curs
     }
     let point = CGPoint::new(w.x + w.width / 2.0, w.y + w.height / 2.0);
     let _ = CGWarpMouseCursorPosition(point);
+}
+
+/// Fronts an app that has no open window, so selecting it still does the
+/// obvious thing. The window focus sequence cannot help here — there is no
+/// window id to raise.
+fn activate_pid(pid: i32) {
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions::ActivateAllWindows);
+    }
 }
 
 fn cursor_location() -> Option<CGPoint> {
@@ -911,7 +920,12 @@ impl App {
             };
             let (pid, wid) = (target.pid, target.wid);
             self.mru.touch(model::WindowId(wid));
-            on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
+            if crate::snapshot::is_windowless(wid) {
+                // No window to raise (PRD §4.1): just bring the app forward.
+                on_main_after(20, move || activate_pid(pid));
+            } else {
+                on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
+            }
             // Warp after the focus retries have had time to settle — separate
             // from the focus chain so timing there is untouched.
             let mode = self.controls.cursor_follows_focus;
@@ -1024,7 +1038,7 @@ impl App {
             self.peek.hide();
             return;
         };
-        if c.wid & 0x8000_0000 != 0 {
+        if crate::snapshot::is_windowless(c.wid) {
             self.peek.hide();
             return;
         }
@@ -1083,7 +1097,7 @@ impl App {
 
     fn request_preview(&self, wid: u32) {
         // Synthetic windowless ids are not capturable.
-        if wid & 0x8000_0000 != 0 {
+        if crate::snapshot::is_windowless(wid) {
             return;
         }
         if let Some(worker) = &self.worker {

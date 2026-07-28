@@ -23,7 +23,16 @@ const FALLBACK_ASPECT: f64 = 1.6;
 /// Synthetic ids for windowless apps: high bit set so they cannot collide with
 /// real `CGWindowID`s, which are allocated from a low monotonic counter.
 fn windowless_id(pid: i32) -> model::WindowId {
-    model::WindowId(pid.cast_unsigned() | 0x8000_0000)
+    model::WindowId(pid.cast_unsigned() | WINDOWLESS_BIT)
+}
+
+/// High bit marks a synthetic windowless-app entry; real `CGWindowID`s come
+/// from a low monotonic counter and never reach it.
+pub const WINDOWLESS_BIT: u32 = 0x8000_0000;
+
+/// Whether `wid` is a synthetic windowless-app entry rather than a real window.
+pub fn is_windowless(wid: u32) -> bool {
+    wid & WINDOWLESS_BIT != 0
 }
 
 fn switchable(w: &winsrv::WindowInfo) -> bool {
