@@ -43,10 +43,14 @@ impl super::WindowServer {
         let post = self.sl.SLPSPostEventRecordTo.unwrap();
         let psn = &raw const psn;
         let fronted = unsafe { set_front(psn, wid, USER_GENERATED) } == 0;
+        // Both halves of the pair are always posted — the sequence is what the
+        // WindowServer expects — but a rejected record means the window did not
+        // become key, so it must not be reported as success.
+        let mut posted = true;
         for kind in [0x01, 0x02] {
             let record = key_event_record(wid, kind);
-            unsafe { post(psn, record.as_ptr()) };
+            posted &= unsafe { post(psn, record.as_ptr()) } == 0;
         }
-        fronted
+        fronted && posted
     }
 }
