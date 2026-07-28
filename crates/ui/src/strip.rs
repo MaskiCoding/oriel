@@ -54,12 +54,6 @@ pub struct Tile {
     pub lantern: bool,
 }
 
-/// Rose from Oriel's own icon. Deliberately not the warning-amber every other
-/// tool reaches for, and it never moves.
-fn lantern_color() -> Retained<NSColor> {
-    NSColor::colorWithSRGBRed_green_blue_alpha(0.882, 0.569, 0.667, 1.0)
-}
-
 impl Default for Tile {
     fn default() -> Self {
         Self {
@@ -703,13 +697,11 @@ fn list_layout(
     }
 }
 
-/// The selection lifts the whole tile: a tinted backing plus an accent ring.
-/// A lit window lifts the same way but in rose, so a working agent reads at a
-/// glance without a badge to hunt for.
+/// The selection lifts the whole tile: a lighter backing plus an accent ring.
+/// A working window is marked by the drifting pearl laid over it instead.
 ///
-/// The two stay tellable apart when they land on the same tile: the ring always
-/// belongs to the selection, the wash always belongs to the light. A selected
-/// window that is also working keeps its accent ring over a rose pane.
+/// The two stay tellable apart when they land on the same tile: the accent ring
+/// always belongs to the selection, the shimmer always belongs to the light.
 fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
     let Some(layer) = tile.layer() else {
         return;
@@ -732,24 +724,22 @@ fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
         0.0
     });
 
-    let backing = if lit {
-        // Light through a pane: strong enough to carry across the strip,
-        // never so strong the preview stops being readable.
-        Some(
-            lantern_color()
-                .colorWithAlphaComponent(if dark { 0.30 } else { 0.20 })
-                .CGColor(),
-        )
+    // Every tile keeps an opaque backing, lit or not. The panel behind is
+    // vibrant now, and a preview composited straight onto it comes back dulled
+    // and faintly warm — the strip has to show what a window really looks like.
+    // Vibrancy belongs in the gaps between tiles, the way the Dock shows
+    // through around its icons, never through a tile itself.
+    //
+    // Nothing tints the tile either: the light is the drifting pearl laid over
+    // it, and a coloured backing underneath only turned that back into a stain.
+    let level = if dark {
+        if on { 0.24 } else { 0.14 }
     } else if on {
-        Some(if dark {
-            NSColor::colorWithWhite_alpha(1.0, 0.13).CGColor()
-        } else {
-            NSColor::colorWithWhite_alpha(0.0, 0.08).CGColor()
-        })
+        0.90
     } else {
-        None
+        0.97
     };
-    layer.setBackgroundColor(backing.as_deref());
+    layer.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(level, 1.0).CGColor()));
 }
 
 /// An image view that scales its image to fill `side` in both directions.
@@ -1510,16 +1500,18 @@ impl Strip {
         let gradient = CAGradientLayer::new();
         gradient.setFrame(bounds);
 
-        // Pearlescent rather than tinted: pale shell colours that shift as they
-        // drift, so the tile looks iridescent instead of stained. Each stop is
-        // faint on its own — the effect is in the movement between them.
+        // Pearlescent rather than tinted: shell colours so pale they are almost
+        // white, carrying only a hint of hue. The middle stop is near-clear, so
+        // the light gathers at the edges and sweeps across as it drifts while
+        // the centre of the preview stays readable. A flat veil at an alpha you
+        // could actually see would just stain the window instead.
         let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
         for (r, g, b, a) in [
-            (0.98, 0.97, 0.90, 0.10),
-            (0.88, 0.94, 0.97, 0.13),
-            (0.94, 0.90, 0.98, 0.12),
-            (0.99, 0.93, 0.94, 0.11),
-            (0.92, 0.97, 0.94, 0.09),
+            (1.00, 0.99, 0.93, 0.34),
+            (1.00, 0.93, 0.95, 0.20),
+            (1.00, 1.00, 1.00, 0.03),
+            (0.93, 0.91, 1.00, 0.20),
+            (0.88, 0.96, 1.00, 0.34),
         ] {
             let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a);
             let cg = color.CGColor();
