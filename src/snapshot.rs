@@ -27,7 +27,9 @@ fn windowless_id(pid: i32) -> model::WindowId {
 }
 
 fn switchable(w: &winsrv::WindowInfo) -> bool {
-    w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
+    w.level == 0
+        && model::WindowState::decode(w.tags, w.attributes).switchable()
+        && model::WindowState::meets_min_size(w.width, w.height)
 }
 
 fn aspect_of(w: &winsrv::WindowInfo) -> f64 {
@@ -40,7 +42,7 @@ fn aspect_of(w: &winsrv::WindowInfo) -> f64 {
 
 /// `AppKit` screen frames converted to the `WindowServer`'s top-left coordinate
 /// space so they can be compared with `WindowInfo::{x,y,width,height}`.
-fn screen_frames() -> Vec<(f64, f64, f64, f64)> {
+pub(crate) fn screen_frames() -> Vec<(f64, f64, f64, f64)> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Vec::new();
     };
@@ -178,7 +180,8 @@ pub fn snapshot_with(
         // Count the app as window-owning even when every window is filtered out,
         // so we do not invent a windowless tile for it below.
         owned_pids.insert(w.pid);
-        let title = w.title.clone().unwrap_or_default();
+        let app_name = w.app.clone().unwrap_or_default();
+        let title = model::WindowState::tile_title(None, w.title.as_deref(), &app_name);
         if hidden_by_rule(rules, bundles, w.pid, &title, true) {
             continue;
         }
@@ -202,7 +205,7 @@ pub fn snapshot_with(
         out_windows.push(model::Window {
             id,
             app: w.pid,
-            app_name: w.app.unwrap_or_default(),
+            app_name,
             title,
             state,
             fullscreen: mark.is_some_and(|m| m.fullscreen),
@@ -218,7 +221,8 @@ pub fn snapshot_with(
     }
 
     for (pid, app_name) in windowless_apps(&owned_pids) {
-        if hidden_by_rule(rules, bundles, pid, "", false) {
+        let title = model::WindowState::tile_title(None, None, &app_name);
+        if hidden_by_rule(rules, bundles, pid, &title, false) {
             continue;
         }
         let id = windowless_id(pid);
@@ -234,7 +238,7 @@ pub fn snapshot_with(
             id,
             app: pid,
             app_name,
-            title: String::new(),
+            title,
             state: model::WindowState::decode(0, 0),
             fullscreen: false,
             space: None,

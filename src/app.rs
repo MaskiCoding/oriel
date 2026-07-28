@@ -10,12 +10,17 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::sync::mpsc::{Sender, channel};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication};
-use objc2_core_foundation::CFRetained;
-use objc2_core_graphics::{CGEventFlags, CGEventTapOptions, CGEventType, CGImage};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication, NSScreen};
+use objc2_core_foundation::{CFRetained, CGPoint};
+use objc2_core_graphics::{
+    CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapOptions, CGEventType,
+    CGImage, CGWarpMouseCursorPosition,
+};
 
 use crate::lens::{self, Binding};
 use crate::login;
@@ -78,6 +83,42 @@ fn spawn_capture(app: &Rc<RefCell<App>>) {
     app.borrow().warm();
 }
 
+/// Full-resolution Peek captures on a dedicated thread. Coalesces to the latest
+/// `(wid, stamp)` so a fast Tab-hold never queues one capture per keystroke.
+/// Results hop back via `on_main` — never enter the tile cache.
+fn spawn_peek_capture(app: &Rc<RefCell<App>>) {
+    if !capture::permitted() {
+        return;
+    }
+    let Some(capturer) = capture::Capturer::new() else {
+        return;
+    };
+    let (tx, rx) = channel::<(u32, u32)>();
+    let thread = std::thread::Builder::new()
+        .name("peek".into())
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut latest = first;
+                while let Ok(next) = rx.try_recv() {
+                    latest = next;
+                }
+                let (wid, stamp) = latest;
+                let Some(image) = capturer.window_image(wid) else {
+                    continue;
+                };
+                on_main(move || {
+                    if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+                        app.borrow().peek_ready(wid, stamp, &image);
+                    }
+                });
+            }
+        })
+        .ok();
+    if thread.is_some() {
+        app.borrow_mut().peek_tx = Some(tx);
+    }
+}
+
 /// Focuses `wid`, retrying on failure — the `WindowServer` often rejects the
 /// first activation after an event and accepts a slightly later one. Bails if a
 /// newer jump has bumped `generation`, so a stale retry can't front a window
@@ -130,7 +171,42 @@ fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
 }
 
 fn switchable(w: &winsrv::WindowInfo) -> bool {
-    w.level == 0 && model::WindowState::decode(w.tags, w.attributes).switchable()
+    w.level == 0
+        && model::WindowState::decode(w.tags, w.attributes).switchable()
+        && model::WindowState::meets_min_size(w.width, w.height)
+}
+
+/// After a jump's focus sequence has had time to settle, optionally warp the
+/// pointer to the focused window's centre.
+fn warp_cursor_to_window(ws: &winsrv::WindowServer, wid: u32, mode: config::CursorFollowsFocus) {
+    use config::CursorFollowsFocus::{Never, OtherScreen};
+
+    if matches!(mode, Never) || wid & 0x8000_0000 != 0 {
+        return;
+    }
+    let space_ids: Vec<u64> = ws.spaces().iter().map(|s| s.id).collect();
+    let Some(w) = ws.windows(&space_ids).into_iter().find(|w| w.wid == wid) else {
+        return;
+    };
+    let frames = crate::snapshot::screen_frames();
+    if matches!(mode, OtherScreen) {
+        let Some(mouse) = cursor_location() else {
+            return;
+        };
+        let mouse_screen = winsrv::screen_index((mouse.x, mouse.y, 0.0, 0.0), &frames);
+        let win_screen = winsrv::screen_index((w.x, w.y, w.width, w.height), &frames);
+        if mouse_screen == win_screen {
+            return;
+        }
+    }
+    let point = CGPoint::new(w.x + w.width / 2.0, w.y + w.height / 2.0);
+    let _ = CGWarpMouseCursorPosition(point);
+}
+
+fn cursor_location() -> Option<CGPoint> {
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)?;
+    let event = CGEvent::new(Some(&source))?;
+    Some(CGEvent::location(Some(&event)))
 }
 
 fn as_window(c: &Candidate) -> model::Window {
@@ -213,6 +289,11 @@ struct App {
     mtm: MainThreadMarker,
     ws: Rc<winsrv::WindowServer>,
     strip: ui::Strip,
+    peek: ui::Peek,
+    /// Latest Peek request stamp; in-flight captures with an older stamp are dropped.
+    peek_stamp: Cell<u32>,
+    /// Sends `(wid, stamp)` to the Peek capture thread. `None` without permission.
+    peek_tx: Option<Sender<(u32, u32)>>,
     session: Option<Live>,
     bindings: Vec<Binding>,
     summon_delay_ms: u32,
@@ -393,6 +474,7 @@ impl App {
                 live.selection.cycle(backward);
                 self.strip.select(live.selection.selected());
             }
+            self.request_peek();
             return input::Disposition::Swallow;
         }
 
@@ -499,6 +581,7 @@ impl App {
             live.selection.select(next);
         }
         self.strip.select(next);
+        self.request_peek();
     }
 
     fn enter_filter(&mut self, initial: Option<&str>) {
@@ -743,9 +826,11 @@ impl App {
 
     fn cancel(&mut self) {
         self.show_epoch = self.show_epoch.wrapping_add(1);
+        self.peek_stamp.set(self.peek_stamp.get().wrapping_add(1));
         self.session = None;
         self.strip.set_query(None);
         self.strip.hide();
+        self.peek.hide();
         self.set_keys_enabled(false);
         self.flush_pending_config();
     }
@@ -754,11 +839,13 @@ impl App {
     /// the focus lands after the triggering event settles (see `on_main_after`).
     fn jump(&mut self) {
         self.show_epoch = self.show_epoch.wrapping_add(1);
+        self.peek_stamp.set(self.peek_stamp.get().wrapping_add(1));
         let Some(live) = self.session.take() else {
             return;
         };
         self.strip.set_query(None);
         self.strip.hide();
+        self.peek.hide();
         self.set_keys_enabled(false);
         let stamp = self.generation.get().wrapping_add(1);
         self.generation.set(stamp);
@@ -771,6 +858,13 @@ impl App {
             let (pid, wid) = (target.pid, target.wid);
             self.mru.touch(model::WindowId(wid));
             on_main_after(20, move || focus_with_retry(&focus, pid, wid, 5));
+            // Warp after the focus retries have had time to settle — separate
+            // from the focus chain so timing there is untouched.
+            let mode = self.controls.cursor_follows_focus;
+            if mode != config::CursorFollowsFocus::Never {
+                let ws = self.ws.clone();
+                on_main_after(280, move || warp_cursor_to_window(&ws, wid, mode));
+            }
         }
         self.flush_pending_config();
     }
@@ -831,6 +925,75 @@ impl App {
         for c in &live.candidates {
             self.request_preview(c.wid);
         }
+        self.request_peek();
+    }
+
+    /// A full-resolution Peek frame arrived. Shown only if the stamp still
+    /// matches the current selection request and a session is live.
+    fn peek_ready(&self, wid: u32, stamp: u32, image: &CGImage) {
+        if stamp != self.peek_stamp.get() || !self.config.peek.enabled {
+            return;
+        }
+        let Some(live) = &self.session else {
+            return;
+        };
+        if !live.shown {
+            return;
+        }
+        let Some(c) = live.candidates.get(live.selection.selected()) else {
+            return;
+        };
+        if c.wid != wid {
+            return;
+        }
+        let Some(screen) = self.peek_screen() else {
+            return;
+        };
+        self.peek.show(image, &screen);
+    }
+
+    /// Asks the Peek worker for the current selection's full-res frame, or
+    /// hides Peek when it should not be visible.
+    fn request_peek(&self) {
+        if !self.config.peek.enabled {
+            self.peek.hide();
+            return;
+        }
+        let Some(live) = &self.session else {
+            self.peek.hide();
+            return;
+        };
+        if !live.shown {
+            return;
+        }
+        let Some(c) = live.candidates.get(live.selection.selected()) else {
+            self.peek.hide();
+            return;
+        };
+        if c.wid & 0x8000_0000 != 0 {
+            self.peek.hide();
+            return;
+        }
+        let Some(tx) = &self.peek_tx else {
+            return;
+        };
+        let stamp = self.peek_stamp.get().wrapping_add(1);
+        self.peek_stamp.set(stamp);
+        let _ = tx.send((c.wid, stamp));
+    }
+
+    fn peek_screen(&self) -> Option<Retained<NSScreen>> {
+        let show_on = self
+            .session
+            .as_ref()
+            .and_then(|l| self.binding(l.binding_idx))
+            .map_or(ui::ShowOn::ActiveScreen, |b| b.look.show_on);
+        let idx = usize::try_from(self.strip.screen_index(show_on)).unwrap_or(0);
+        let screens = NSScreen::screens(self.mtm);
+        if idx >= screens.count() {
+            return screens.firstObject();
+        }
+        Some(screens.objectAtIndex(idx))
     }
 
     /// A fresh capture arrived from the worker: cache it, and if that window
@@ -850,9 +1013,10 @@ impl App {
 
     /// Pre-captures every switchable window, so the first summon paints
     /// previews instead of icons. Deliberately lighter than `enumerate`: just
-    /// the window list, no MRU, Space, or badge work.
+    /// the window list, no MRU, Space, or badge work. Gated on
+    /// `background_capture` — with it off, captures happen only during a session.
     fn warm(&self) {
-        if self.worker.is_none() {
+        if !self.config.background_capture || self.worker.is_none() {
             return;
         }
         let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
@@ -919,7 +1083,9 @@ impl App {
     fn on_app_activated(&mut self) {
         if let Some(wid) = front_window() {
             self.mru.touch(model::WindowId(wid));
-            self.request_preview(wid);
+            if self.config.background_capture {
+                self.request_preview(wid);
+            }
         }
         self.sync_hotkeys();
     }
@@ -1158,6 +1324,9 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         mtm,
         ws: Rc::new(ws),
         strip: ui::Strip::new(mtm),
+        peek: ui::Peek::new(mtm),
+        peek_stamp: Cell::new(0),
+        peek_tx: None,
         session: None,
         bindings,
         summon_delay_ms: cfg.summon_delay_ms.min(900),
@@ -1183,6 +1352,7 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
     }));
     APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
     spawn_capture(&app);
+    spawn_peek_capture(&app);
 
     if !boot_triggers(&app, cfg.menubar_icon) {
         return;
