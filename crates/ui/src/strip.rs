@@ -130,6 +130,8 @@ const SCALE_SMALL: f64 = 0.7;
 const SCALE_MEDIUM: f64 = 1.0;
 const SCALE_LARGE: f64 = 1.4;
 const SCALE_FLOOR: f64 = 0.2;
+/// Stand-in window shape when the real aspects are not to hand.
+const NOMINAL_ASPECT: f64 = 1.5;
 
 fn as_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
@@ -217,14 +219,21 @@ impl Metrics {
 /// The chosen size is a **ceiling**, not a promise. The strip never scrolls
 /// (PRD §4.6), so a fixed size that would not fit densifies down from there
 /// exactly as `Auto` does — a large size with sixty windows still fits.
-fn size_scale(size: Size, style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
+fn size_scale(
+    size: Size,
+    style: Style,
+    tiles: usize,
+    aspects: &[f64],
+    screen_w: f64,
+    screen_h: f64,
+) -> f64 {
     let ceiling = match size {
         Size::Small => SCALE_SMALL,
         Size::Medium => SCALE_MEDIUM,
         // Auto has no ceiling of its own beyond the largest step.
         Size::Large | Size::Auto => SCALE_LARGE,
     };
-    scale_under(ceiling, style, tiles, screen_w, screen_h)
+    scale_under(ceiling, style, tiles, aspects, screen_w, screen_h)
 }
 
 /// Picks a scale so every tile fits on one screen for the active style. More
@@ -232,11 +241,18 @@ fn size_scale(size: Size, style: Style, tiles: usize, screen_w: f64, screen_h: f
 /// instead of collapsing to zero.
 #[cfg(test)]
 fn auto_scale(style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
-    scale_under(SCALE_LARGE, style, tiles, screen_w, screen_h)
+    scale_under(SCALE_LARGE, style, tiles, &[], screen_w, screen_h)
 }
 
 /// Largest candidate scale at or below `ceiling` whose panel fits the screen.
-fn scale_under(ceiling: f64, style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
+fn scale_under(
+    ceiling: f64,
+    style: Style,
+    tiles: usize,
+    aspects: &[f64],
+    screen_w: f64,
+    screen_h: f64,
+) -> f64 {
     if tiles == 0 || screen_w <= 0.0 || screen_h <= 0.0 {
         return ceiling.min(SCALE_MEDIUM);
     }
@@ -276,7 +292,7 @@ fn scale_under(ceiling: f64, style: Style, tiles: usize, screen_w: f64, screen_h
         ],
     };
     for &scale in candidates {
-        if scale <= ceiling && panel_fits(style, tiles, screen_w, screen_h, scale) {
+        if scale <= ceiling && panel_fits(style, tiles, aspects, screen_w, screen_h, scale) {
             return scale;
         }
     }
@@ -354,12 +370,25 @@ fn list_content_width(tiles: &[Tile], m: &Metrics, show: TitleShow, markers: boo
     (2.0 * m.inset + icon_slot + max_title + badge_slot).clamp(m.list_min_w, m.list_max_w)
 }
 
-fn panel_fits(style: Style, tiles: usize, screen_w: f64, screen_h: f64, scale: f64) -> bool {
+/// `aspects` are the real window shapes when the caller has them. A Gallery
+/// tile's width follows its window's aspect, so probing with one nominal shape
+/// under-measures a row of wide windows and lets the panel overflow.
+fn panel_fits(
+    style: Style,
+    tiles: usize,
+    aspects: &[f64],
+    screen_w: f64,
+    screen_h: f64,
+    scale: f64,
+) -> bool {
     let m = Metrics::at(scale);
     let plan = match style {
         Style::Gallery => {
-            let tw = gallery_tile_width(1.5, &m);
-            let widths = vec![tw; tiles];
+            let widths: Vec<f64> = if aspects.is_empty() {
+                vec![gallery_tile_width(NOMINAL_ASPECT, &m); tiles]
+            } else {
+                aspects.iter().map(|&a| gallery_tile_width(a, &m)).collect()
+            };
             let max_content = (screen_w * 0.9 - 2.0 * m.pad).max(m.min_w);
             layout_sized(&widths, max_content, m.gallery_tile_h(), m.gap, m.pad, 0.0)
         }
@@ -1066,7 +1095,15 @@ impl Strip {
             None => (1440.0, 900.0, None),
         };
 
-        let scale = size_scale(look.size, look.style, tiles.len(), screen_w, screen_h);
+        let aspects: Vec<f64> = tiles.iter().map(|t| t.aspect).collect();
+        let scale = size_scale(
+            look.size,
+            look.style,
+            tiles.len(),
+            &aspects,
+            screen_w,
+            screen_h,
+        );
         self.scale.set(scale);
         let m = Metrics::at(scale);
         let dark = theme_is_dark(look.theme);
@@ -1677,10 +1714,10 @@ mod tests {
                 (Size::Large, SCALE_LARGE),
             ] {
                 for &n in &[1usize, 8, 40, 120] {
-                    let s = size_scale(size, style, n, 1440.0, 900.0);
+                    let s = size_scale(size, style, n, &[], 1440.0, 900.0);
                     assert!(s <= ceiling, "{style:?} {size:?} n={n}: {s} above ceiling");
                     assert!(
-                        panel_fits(style, n, 1440.0, 900.0, s),
+                        panel_fits(style, n, &[], 1440.0, 900.0, s),
                         "{style:?} {size:?} n={n}: scale {s} overflows"
                     );
                 }
@@ -1689,11 +1726,26 @@ mod tests {
     }
 
     #[test]
+    fn wide_windows_shrink_the_scale_more_than_nominal_ones() {
+        // Probing with one nominal shape under-measures a row of ultrawides and
+        // lets the panel run off the screen.
+        let wide = vec![4.0; 12];
+        let nominal = vec![NOMINAL_ASPECT; 12];
+        let s_wide = size_scale(Size::Auto, Style::Gallery, 12, &wide, 1440.0, 900.0);
+        let s_nom = size_scale(Size::Auto, Style::Gallery, 12, &nominal, 1440.0, 900.0);
+        assert!(
+            s_wide <= s_nom,
+            "wide {s_wide} should not exceed nominal {s_nom}"
+        );
+        assert!(panel_fits(Style::Gallery, 12, &wide, 1440.0, 900.0, s_wide));
+    }
+
+    #[test]
     fn a_small_screen_shrinks_a_large_size() {
         // Same window count, Large requested: the smaller screen must not get
         // the same scale as the roomy one.
-        let big = size_scale(Size::Large, Style::Gallery, 30, 2560.0, 1440.0);
-        let small = size_scale(Size::Large, Style::Gallery, 30, 1280.0, 800.0);
+        let big = size_scale(Size::Large, Style::Gallery, 30, &[], 2560.0, 1440.0);
+        let small = size_scale(Size::Large, Style::Gallery, 30, &[], 1280.0, 800.0);
         assert!(small <= big);
     }
 
@@ -1772,7 +1824,7 @@ mod tests {
                 for &n in &[1usize, 3, 8, 20, 60, 200] {
                     let s = auto_scale(style, n, sw, sh);
                     assert!(
-                        panel_fits(style, n, sw, sh, s),
+                        panel_fits(style, n, &[], sw, sh, s),
                         "auto_scale({style:?}, {n}, {sw}, {sh}) = {s} does not fit"
                     );
                     let floor = match style {

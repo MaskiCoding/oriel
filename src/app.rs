@@ -391,6 +391,9 @@ impl App {
         }
 
         let epoch = self.show_epoch;
+        // Armed with the session, not with the reveal: during an apparition
+        // delay the strip is still invisible but Tab and Escape must already work.
+        self.set_keys_enabled(true);
         self.session = Some(Live {
             candidates,
             selection,
@@ -483,7 +486,6 @@ impl App {
             return;
         }
         live.shown = true;
-        self.set_keys_enabled(true);
         self.render();
         // PRD §8.2: first paint within ~33 ms of the trigger, warm cache.
         // Measured from the hot key, so it covers enumeration and resolve too.
@@ -944,7 +946,14 @@ impl App {
             let mode = self.controls.cursor_follows_focus;
             if mode != config::CursorFollowsFocus::Never {
                 let ws = self.ws.clone();
-                on_main_after(280, move || warp_cursor_to_window(&ws, wid, mode));
+                // Same generation guard as the focus chain: a warp queued for a
+                // jump the user has already moved on from must not fire.
+                let generation = self.generation.clone();
+                on_main_after(280, move || {
+                    if generation.get() == stamp {
+                        warp_cursor_to_window(&ws, wid, mode);
+                    }
+                });
             }
         }
         self.flush_pending_config();
