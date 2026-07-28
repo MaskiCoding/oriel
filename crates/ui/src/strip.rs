@@ -732,14 +732,18 @@ fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
     //
     // Nothing tints the tile either: the light is the drifting pearl laid over
     // it, and a coloured backing underneath only turned that back into a stain.
-    let level = if dark {
-        if on { 0.24 } else { 0.14 }
-    } else if on {
-        0.90
-    } else {
-        0.97
-    };
-    layer.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(level, 1.0).CGColor()));
+    // No card behind a tile. A preview is already a picture of a window with
+    // its own edges; boxing it in a second panel reads as chrome the window
+    // does not have. Only the selection gets a surface, and only enough of one
+    // to sit under the caption.
+    let backing = on.then(|| {
+        if dark {
+            NSColor::colorWithWhite_alpha(1.0, 0.14).CGColor()
+        } else {
+            NSColor::colorWithWhite_alpha(0.0, 0.10).CGColor()
+        }
+    });
+    layer.setBackgroundColor(backing.as_deref());
 }
 
 /// An image view that scales its image to fill `side` in both directions.
@@ -764,6 +768,12 @@ fn app_icon_uncached(pid: i32) -> Option<Retained<objc2_app_kit::NSImage>> {
 fn mouse_location() -> NSPoint {
     // SAFETY: `+[NSEvent mouseLocation]` returns an `NSPoint` by value.
     unsafe { msg_send![class!(NSEvent), mouseLocation] }
+}
+
+/// `ORIEL_MATERIAL=none` drops vibrancy back to a flat fill, so a rendering
+/// problem can be tested with the blur out of the picture.
+fn vibrancy_off() -> bool {
+    std::env::var("ORIEL_MATERIAL").is_ok_and(|v| v == "none")
 }
 
 /// The vibrancy material. `ORIEL_MATERIAL` overrides it while a look is being
@@ -1122,8 +1132,13 @@ impl Strip {
         if let Some(layer) = content.layer() {
             layer.setCornerRadius(18.0);
             layer.setMasksToBounds(true);
-            // Transparent: the vibrancy view behind the tiles is the background.
-            layer.setBackgroundColor(None);
+            if vibrancy_off() {
+                layer
+                    .setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.12, 0.94).CGColor()));
+            } else {
+                // The vibrancy view behind the tiles is the background.
+                layer.setBackgroundColor(None);
+            }
             layer.setBorderWidth(1.0);
         }
 
@@ -1131,6 +1146,7 @@ impl Strip {
         // behind it the way the Dock does. Added before any tile so it stays at
         // the bottom, and sized with the view so a re-plan cannot leave a seam.
         let glass = NSVisualEffectView::new(mtm);
+        glass.setHidden(vibrancy_off());
         glass.setMaterial(material_for(true));
         glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
         glass.setState(NSVisualEffectState::Active);
