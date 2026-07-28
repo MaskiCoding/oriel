@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -557,7 +558,7 @@ fn scaled_icon_view(
     view
 }
 
-fn app_icon(pid: i32) -> Option<Retained<objc2_app_kit::NSImage>> {
+fn app_icon_uncached(pid: i32) -> Option<Retained<objc2_app_kit::NSImage>> {
     NSRunningApplication::runningApplicationWithProcessIdentifier(pid).and_then(|app| app.icon())
 }
 
@@ -843,6 +844,9 @@ pub struct Strip {
     dark: Cell<bool>,
     /// Scale last applied by `show`, so `update_tile` rebuilds at the same size.
     scale: Cell<f64>,
+    /// App icons by pid — resolving one is a process lookup, and a summon
+    /// paints many tiles that share a handful of apps.
+    icons: RefCell<HashMap<i32, Option<Retained<objc2_app_kit::NSImage>>>>,
     /// List column width last planned by `show` (content-driven).
     list_w: Cell<f64>,
     /// `None` hides the query row; `Some` shows it with that text (may be empty).
@@ -898,6 +902,7 @@ impl Strip {
             look: Cell::new(Look::default()),
             dark: Cell::new(true),
             scale: Cell::new(SCALE_MEDIUM),
+            icons: RefCell::new(HashMap::new()),
             list_w: Cell::new(LIST_MIN_W),
             query: RefCell::new(None),
             query_label: RefCell::new(None),
@@ -1157,6 +1162,18 @@ impl Strip {
         }
     }
 
+    /// App icon for `pid`, memoised for the process's lifetime. Several windows
+    /// usually share one app, and summon must not repeat the process lookup per
+    /// tile (PRD §5.5).
+    fn app_icon(&self, pid: i32) -> Option<Retained<objc2_app_kit::NSImage>> {
+        if let Some(hit) = self.icons.borrow().get(&pid) {
+            return hit.clone();
+        }
+        let icon = app_icon_uncached(pid);
+        self.icons.borrow_mut().insert(pid, icon.clone());
+        icon
+    }
+
     /// Index of the screen `show_on` selects, in `NSScreen::screens` order —
     /// so the lens resolver's `strip-screen` scope filters on the screen the
     /// strip will actually appear on.
@@ -1217,7 +1234,7 @@ impl Strip {
         }
 
         let icon_s = m.icons_icon;
-        if let Some(icon) = app_icon(tile.pid) {
+        if let Some(icon) = self.app_icon(tile.pid) {
             let icon_y = m.inset + m.caption_h + ICONS_GAP;
             let frame = NSRect::new(
                 NSPoint::new((width - icon_s) / 2.0, icon_y),
@@ -1275,7 +1292,7 @@ impl Strip {
         };
 
         let mut text_x = m.inset;
-        if with_icon && let Some(icon) = app_icon(tile.pid) {
+        if with_icon && let Some(icon) = self.app_icon(tile.pid) {
             let image = NSImageView::new(self.mtm);
             image.setImage(Some(&icon));
             let icon_s = m.caption_icon;
@@ -1439,7 +1456,7 @@ impl Strip {
     /// Fallback: a large centered app icon in place of the preview.
     fn icon_surface(&self, pid: i32, width: f64, m: &Metrics) -> Retained<NSView> {
         let host = NSView::initWithFrame(self.mtm.alloc(), Self::surface_frame(width, m));
-        if let Some(icon) = app_icon(pid) {
+        if let Some(icon) = self.app_icon(pid) {
             let frame = NSRect::new(
                 NSPoint::new(
                     (width - 2.0 * m.inset - m.icon) / 2.0,
