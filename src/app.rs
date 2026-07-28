@@ -72,13 +72,16 @@ fn spawn_capture(app: &Rc<RefCell<App>>) {
         println!("capture: unavailable — previews disabled");
         return;
     };
-    let worker = capture::Worker::spawn(capturer, |wid, image| {
+    let Some(worker) = capture::Worker::spawn(capturer, |wid, image| {
         on_main(move || {
             if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
                 app.borrow_mut().preview_ready(wid, image);
             }
         });
-    });
+    }) else {
+        println!("capture: could not start the preview worker — previews disabled");
+        return;
+    };
     app.borrow_mut().worker = Some(worker);
     app.borrow().warm();
 }
