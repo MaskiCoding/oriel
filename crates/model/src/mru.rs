@@ -59,7 +59,10 @@ mod tests {
         for id in [3, 2, 1] {
             mru.touch(WindowId(id));
         }
-        mru.sync(&ids(&[2, 3]));
+        // Recency is 1, 2, 3. Hand `sync` the survivors in the *opposite*
+        // order, so an implementation that simply adopted the enumeration
+        // order would produce [3, 2] and fail.
+        mru.sync(&ids(&[3, 2]));
         assert_eq!(mru.order(), ids(&[2, 3]));
     }
 

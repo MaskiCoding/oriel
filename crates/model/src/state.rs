@@ -120,6 +120,10 @@ mod tests {
         assert_eq!(badge(false, true, None), "⤢");
         assert_eq!(badge(false, false, Some(3)), "3");
         assert_eq!(badge(true, false, Some(2)), "● 2");
+        // Every combination, including the ones the markers can hold at once.
+        assert_eq!(badge(true, true, None), "● ⤢");
+        assert_eq!(badge(false, true, Some(4)), "⤢ 4");
+        assert_eq!(badge(true, true, Some(5)), "● ⤢ 5");
     }
 
     #[test]
