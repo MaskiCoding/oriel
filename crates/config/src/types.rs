@@ -299,21 +299,35 @@ pub(crate) fn default_lenses() -> Vec<ResolvedLens> {
     vec![first, second]
 }
 
+/// PRD §4.7 shipped defaults: Finder hidden when it has no window, and
+/// pass-through-when-fullscreen for the capture-everything remote/VM clients.
 pub(crate) fn default_rules() -> Vec<Rule> {
-    vec![
-        Rule {
-            bundle_prefix: "com.parallels.".into(),
-            pass_triggers: Some(PassTriggers::Always),
-            hide_windows: None,
-            hide_title_substrings: Vec::new(),
-        },
-        Rule {
-            bundle_prefix: "com.apple.finder".into(),
-            pass_triggers: None,
-            hide_windows: Some(HideWindows::Windowless),
-            hide_title_substrings: Vec::new(),
-        },
-    ]
+    let pass_fullscreen = |prefix: &str| Rule {
+        bundle_prefix: prefix.into(),
+        pass_triggers: Some(PassTriggers::Fullscreen),
+        hide_windows: None,
+        hide_title_substrings: Vec::new(),
+    };
+    let mut rules = vec![Rule {
+        bundle_prefix: "com.apple.finder".into(),
+        pass_triggers: None,
+        hide_windows: Some(HideWindows::Windowless),
+        hide_title_substrings: Vec::new(),
+    }];
+    rules.extend(
+        [
+            "com.apple.ScreenSharing",
+            "com.microsoft.rdc.",
+            "com.teamviewer.",
+            "org.virtualbox.",
+            "com.parallels.",
+            "com.citrix.",
+            "com.vmware.fusion",
+            "com.utmapp.",
+        ]
+        .map(pass_fullscreen),
+    );
+    rules
 }
 
 #[derive(Debug, Deserialize)]

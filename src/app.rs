@@ -396,7 +396,7 @@ impl App {
             show_epoch: epoch,
             filter: None,
         });
-        self.strip.set_look(binding.look);
+        self.strip.set_look(self.degraded(binding.look));
 
         let linger = lens::stays_open(binding.on_release);
         let held = binding.hold.is_empty() || self.held.contains(binding.hold);
@@ -446,10 +446,20 @@ impl App {
             show_epoch,
             filter: None,
         });
-        self.strip.set_look(binding.look);
+        self.strip.set_look(self.degraded(binding.look));
         if shown {
             self.render();
         }
+    }
+
+    /// Without Screen Recording there are no previews, so Gallery would be a
+    /// grid of fallback icons in preview-shaped boxes. Show Icons instead —
+    /// PRD §4.8 and §8.6 make the degraded mode first-class, not an accident.
+    fn degraded(&self, mut look: ui::Look) -> ui::Look {
+        if self.worker.is_none() && look.style == ui::Style::Gallery {
+            look.style = ui::Style::Icons;
+        }
+        look
     }
 
     fn reveal_if(&mut self, epoch: u32) {

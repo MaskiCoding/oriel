@@ -48,12 +48,42 @@ trigger = "alt+tab"
 apps = "active"
 
 [[rule]]
-bundle_prefix = "com.parallels."
-pass_triggers = "always"
-
-[[rule]]
 bundle_prefix = "com.apple.finder"
 hide_windows = "windowless"
+
+# Capture-everything remote-desktop and VM clients: hand them the trigger while
+# they are fullscreen, so the guest OS sees its own switcher shortcut.
+[[rule]]
+bundle_prefix = "com.apple.ScreenSharing"
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.microsoft.rdc."
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.teamviewer."
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "org.virtualbox."
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.parallels."
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.citrix."
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.vmware.fusion"
+pass_triggers = "fullscreen"
+
+[[rule]]
+bundle_prefix = "com.utmapp."
+pass_triggers = "fullscreen"
 "#;
 
 /// One configured lens ready for the live loop.

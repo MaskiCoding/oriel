@@ -186,8 +186,37 @@ hide_windows = "windowless"
         assert_eq!(cfg.lenses[1].spaces, Spaces::All);
         assert_eq!(cfg.lenses[1].windowless_apps, Disposition::End);
 
+        // PRD §4.7 shipped rules: Finder hidden when windowless, plus
+        // pass-through-when-fullscreen for every remote/VM client named there.
         assert_eq!(cfg.rules, default_rules());
-        assert_eq!(cfg, parse(PRD_EXAMPLE).unwrap());
+        assert_eq!(cfg.rules[0].bundle_prefix, "com.apple.finder");
+        assert_eq!(cfg.rules[0].hide_windows, Some(HideWindows::Windowless));
+        for prefix in [
+            "com.apple.ScreenSharing",
+            "com.microsoft.rdc.",
+            "com.teamviewer.",
+            "org.virtualbox.",
+            "com.parallels.",
+            "com.citrix.",
+            "com.vmware.fusion",
+            "com.utmapp.",
+        ] {
+            let rule = cfg
+                .rules
+                .iter()
+                .find(|r| r.bundle_prefix == prefix)
+                .unwrap_or_else(|| panic!("no shipped rule for {prefix}"));
+            assert_eq!(rule.pass_triggers, Some(PassTriggers::Fullscreen));
+        }
+
+        // The PRD §10 example is an illustration with a cut-down rule list, so
+        // it parses to the same globals and lenses but not the same rules.
+        let example = parse(PRD_EXAMPLE).unwrap();
+        assert_eq!(cfg.lenses, example.lenses);
+        assert_eq!(cfg.summon_delay_ms, example.summon_delay_ms);
+        assert_eq!(cfg.theme, example.theme);
+        assert_eq!(cfg.controls, example.controls);
+        assert_eq!(cfg.keys, example.keys);
     }
 
     #[test]
