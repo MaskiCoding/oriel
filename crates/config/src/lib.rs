@@ -53,8 +53,9 @@ impl Default for Config {
 }
 
 pub fn parse(toml: &str) -> Result<Config, ConfigError> {
-    let raw: RawConfig = toml::from_str(toml)?;
+    let mut raw: RawConfig = toml::from_str(toml)?;
     let lenses = resolve_lenses(&raw.lenses)?;
+    types::validate_rules(&mut raw.rules)?;
     Ok(Config {
         summon_delay_ms: raw.summon_delay_ms.min(types::MAX_SUMMON_DELAY_MS),
         theme: raw.theme,
@@ -411,6 +412,64 @@ theme = "dark"
         assert_eq!(cfg.summon_delay_ms, 10);
         assert_eq!(cfg.theme, Theme::Dark);
         assert_eq!(cfg.lenses, default_lenses());
+    }
+
+    #[test]
+    fn empty_bundle_prefix_errors() {
+        // starts_with("") is true for every app — this must never parse.
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = ""
+hide_windows = "always"
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyBundlePrefix));
+
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = "   "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::EmptyBundlePrefix));
+    }
+
+    #[test]
+    fn blank_title_substrings_are_dropped_not_matched() {
+        // contains("") is true for every title.
+        let cfg = parse(
+            r#"
+[[rule]]
+bundle_prefix = "com.example."
+hide_windows = "title-contains"
+hide_title_substrings = ["", "  ", "draft"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.rules[0].hide_title_substrings,
+            vec!["draft".to_string()]
+        );
+    }
+
+    #[test]
+    fn title_contains_with_no_usable_substrings_errors() {
+        let err = parse(
+            r#"
+[[rule]]
+bundle_prefix = "com.example."
+hide_windows = "title-contains"
+hide_title_substrings = ["", "   "]
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::TitleContainsWithoutSubstrings(ref p) if p == "com.example."
+        ));
     }
 
     #[test]

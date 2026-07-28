@@ -440,6 +440,27 @@ impl Default for RawConfig {
 /// is the value actually in force.
 pub(crate) const MAX_SUMMON_DELAY_MS: u32 = 900;
 
+/// Rules come from a hand-edited file, and the two empty-string cases are
+/// silent disasters: `starts_with("")` matches every app, and `contains("")`
+/// matches every title — one stray blank would hide the whole strip.
+pub(crate) fn validate_rules(rules: &mut [Rule]) -> Result<(), ConfigError> {
+    for rule in rules.iter_mut() {
+        if rule.bundle_prefix.trim().is_empty() {
+            return Err(ConfigError::EmptyBundlePrefix);
+        }
+        rule.hide_title_substrings
+            .retain(|sub| !sub.trim().is_empty());
+        if rule.hide_windows == Some(HideWindows::TitleContains)
+            && rule.hide_title_substrings.is_empty()
+        {
+            return Err(ConfigError::TitleContainsWithoutSubstrings(
+                rule.bundle_prefix.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_lenses(raw: &[RawLens]) -> Result<Vec<ResolvedLens>, ConfigError> {
     if raw.is_empty() {
         return Ok(default_lenses());
