@@ -60,7 +60,7 @@ fn command_for(id: &str) -> Option<MenuCommand> {
 }
 
 pub struct MenuBar {
-    _tray: TrayIcon,
+    tray: TrayIcon,
     pause: CheckMenuItem,
 }
 
@@ -94,7 +94,14 @@ impl MenuBar {
             .build()
             .ok()?;
 
-        Some(Self { _tray: tray, pause })
+        Some(Self { tray, pause })
+    }
+
+    /// Shows how many agents are working beside the status icon; nothing at all
+    /// when none are, so the menu bar stays quiet in the common case.
+    pub fn set_working(&self, count: usize) {
+        let title = (count > 0).then(|| format!(" {count}"));
+        self.tray.set_title(title.as_deref());
     }
 
     /// Reflects paused state in the menu (checkmark).

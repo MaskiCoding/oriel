@@ -47,6 +47,19 @@ pub struct Tile {
     pub title_spans: Vec<(usize, usize)>,
     /// Byte ranges `(start, len)` in `app` to highlight.
     pub app_spans: Vec<(usize, usize)>,
+    /// An agent is working inside this window's app. Drawn as a still mark —
+    /// nothing in the strip animates.
+    pub lantern: bool,
+}
+
+/// The lit mark. A small filled bloom, not a spinner: an oriel is a window, and
+/// a window with its light on means someone is working behind it.
+const LANTERN_MARK: &str = "✿";
+
+/// Rose from Oriel's own icon. Deliberately not the warning-amber every other
+/// tool reaches for, and it never moves.
+fn lantern_color() -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(0.882, 0.569, 0.667, 1.0)
 }
 
 impl Default for Tile {
@@ -60,6 +73,7 @@ impl Default for Tile {
             badge: String::new(),
             title_spans: Vec::new(),
             app_spans: Vec::new(),
+            lantern: false,
         }
     }
 }
@@ -83,6 +97,7 @@ impl Tile {
             badge,
             title_spans: Vec::new(),
             app_spans: Vec::new(),
+            lantern: false,
         }
     }
 }
@@ -388,6 +403,10 @@ fn list_content_width(tiles: &[Tile], m: &Metrics, show: TitleShow, markers: boo
         max_title = max_title.max(text_width(&tile_label(tile, show), m.title_font));
         if markers && !tile.badge.is_empty() {
             max_badge = max_badge.max(text_width(&tile.badge, m.badge_font));
+        }
+        if tile.lantern {
+            // The mark shares the right edge with the state markers.
+            max_badge = max_badge.max(text_width(LANTERN_MARK, m.badge_font));
         }
     }
     let icon_slot = m.caption_icon + 6.0;
@@ -1501,6 +1520,17 @@ impl Strip {
 
         let mut text_end = width - m.inset;
         let look = self.look.get();
+        if tile.lantern {
+            let lamp = NSTextField::labelWithString(&NSString::from_str(LANTERN_MARK), self.mtm);
+            lamp.setFont(Some(&NSFont::systemFontOfSize(m.badge_font)));
+            lamp.setTextColor(Some(&lantern_color()));
+            lamp.sizeToFit();
+            let w = lamp.frame().size.width;
+            let y = base + (band_h - m.badge_font - 2.0).max(0.0) / 2.0;
+            lamp.setFrameOrigin(NSPoint::new(text_end - w, y));
+            view.addSubview(&lamp);
+            text_end -= w + 5.0;
+        }
         if look.markers && !tile.badge.is_empty() {
             let marks = NSTextField::labelWithString(&NSString::from_str(&tile.badge), self.mtm);
             marks.setFont(Some(&NSFont::systemFontOfSize(m.badge_font)));

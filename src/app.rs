@@ -32,6 +32,38 @@ use keys::{ActionKeys, Dir, KEY_DELETE};
 /// the triggering event (the `WindowServer` ignores it), and the `WindowServer`
 /// also needs a moment to settle after the event before it accepts one.
 /// Callers capture `Rc` and must already be on the main thread.
+/// How often the process table is swept. Each sweep measured at 1-2 ms, so a
+/// steady two-second beat is far below anything a user could feel.
+const LANTERN_TICK_MS: u64 = 2000;
+
+/// Re-arms itself for the life of the process.
+fn schedule_lantern() {
+    on_main_after(LANTERN_TICK_MS, || {
+        let Some(app) = APP.with(|slot| slot.borrow().upgrade()) else {
+            return;
+        };
+        // Sample and read the counts under one borrow, then drop it before
+        // touching the status item: rebuilding that re-enters this borrow.
+        let (count, live) = {
+            let mut app = app.borrow_mut();
+            if app.paused {
+                (0, false)
+            } else {
+                let roots = crate::snapshot::app_pids();
+                app.lantern.poll(&roots);
+                (app.lantern.count(), app.session.is_some())
+            }
+        };
+        if let Some(menubar) = app.borrow().menubar.as_ref() {
+            menubar.set_working(count);
+        }
+        if live {
+            app.borrow_mut().relight();
+        }
+        schedule_lantern();
+    });
+}
+
 fn on_main_after(delay_ms: u64, work: impl FnOnce() + 'static) {
     let mtm = MainThreadMarker::new().expect("on_main_after requires the main thread");
     let work = MainThreadBound::new(work, mtm);
@@ -161,8 +193,9 @@ struct Candidate {
     app_spans: Vec<(usize, usize)>,
 }
 
-fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>) -> ui::Tile {
+fn tile_of(c: &Candidate, preview: Option<CFRetained<CGImage>>, lantern: bool) -> ui::Tile {
     ui::Tile {
+        lantern,
         app: c.app.clone(),
         title: c.title.clone(),
         pid: c.pid,
@@ -349,6 +382,9 @@ struct App {
     suppression: Option<input::Suppression>,
     paused: bool,
     menubar: Option<MenuBar>,
+    lantern: crate::lantern::Lantern,
+    /// Which tiles were painted lit, so a poll only repaints what changed.
+    lit: Vec<bool>,
     settings: Option<ui::Settings>,
     /// Config arrived while a session was open; applied on close.
     pending_config: Option<config::Config>,
@@ -1017,6 +1053,33 @@ impl App {
             .collect()
     }
 
+    /// Repaints only the tiles whose lit state changed since the last poll.
+    /// A strip that is up while agents work must not rebuild itself every tick.
+    fn relight(&mut self) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        if !live.shown {
+            return;
+        }
+        let changed: Vec<(usize, Candidate, bool)> = live
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c, self.lantern.working(c.pid)))
+            .filter(|(i, _, want)| self.lit.get(*i).copied().unwrap_or(false) != *want)
+            .map(|(i, c, want)| (i, c.clone(), want))
+            .collect();
+        for (index, candidate, want) in changed {
+            let preview = self.cache.shown(candidate.wid).cloned();
+            self.strip
+                .update_tile(index, &tile_of(&candidate, preview, want));
+            if let Some(slot) = self.lit.get_mut(index) {
+                *slot = want;
+            }
+        }
+    }
+
     /// Paints the strip for the current session: previews straight from cache
     /// (stale beats late — first paint never waits on a capture), then a
     /// refresh of every visible window queued behind it.
@@ -1025,11 +1088,13 @@ impl App {
             return;
         };
         let cache = &mut self.cache;
+        let lantern = &self.lantern;
         let tiles: Vec<ui::Tile> = live
             .candidates
             .iter()
-            .map(|c| tile_of(c, cache.shown(c.wid).cloned()))
+            .map(|c| tile_of(c, cache.shown(c.wid).cloned(), lantern.working(c.pid)))
             .collect();
+        self.lit = tiles.iter().map(|t| t.lantern).collect();
         self.strip.show(&tiles, live.selection.selected());
         for c in &live.candidates {
             self.request_preview(c.wid);
@@ -1116,8 +1181,10 @@ impl App {
         let Some(index) = live.candidates.iter().position(|c| c.wid == wid) else {
             return;
         };
+        let candidate = &live.candidates[index];
+        let lit = self.lantern.working(candidate.pid);
         self.strip
-            .update_tile(index, &tile_of(&live.candidates[index], Some(image)));
+            .update_tile(index, &tile_of(candidate, Some(image), lit));
     }
 
     /// Pre-captures every switchable window, so the first summon paints
@@ -1533,11 +1600,19 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         suppression: None,
         paused: false,
         menubar: None,
+        lit: Vec::new(),
+        lantern: crate::lantern::Lantern::new(
+            crate::lantern::DEFAULT_BINARIES
+                .iter()
+                .map(|b| (*b).to_string())
+                .collect(),
+        ),
         settings: None,
         pending_config: None,
     }));
     APP.with(|slot| *slot.borrow_mut() = Rc::downgrade(&app));
     spawn_capture(&app);
+    schedule_lantern();
     spawn_peek_capture(&app);
     install_mouse(&app);
     app.borrow().strip.set_fade_out(cfg.animation.fade_out);

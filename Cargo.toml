@@ -50,6 +50,7 @@ objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-foundation = { version = "0.3.2", features = ["NSBundle", "NSData", "NSDictionary", "NSError", "NSNotification", "NSString"] }
 png = "0.18"
+proctable = { path = "crates/proctable" }
 tray-icon = { version = "0.24", default-features = false }
 ui = { path = "crates/ui" }
 winsrv = { path = "crates/winsrv" }

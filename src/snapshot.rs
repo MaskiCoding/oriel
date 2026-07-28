@@ -100,6 +100,17 @@ fn space_marks(spaces: &[winsrv::SpaceInfo]) -> HashMap<u64, SpaceMark> {
     marks
 }
 
+/// Every app that could own a window. Lantern attributes an agent's work to the
+/// nearest of these above it in the process tree.
+pub fn app_pids() -> Vec<i32> {
+    NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .map(|app| app.processIdentifier())
+        .filter(|pid| *pid > 0)
+        .collect()
+}
+
 fn windowless_apps(owned: &HashSet<i32>) -> Vec<(i32, String)> {
     let workspace = NSWorkspace::sharedWorkspace();
     let mut out = Vec::new();

@@ -1,4 +1,5 @@
 mod app;
+mod lantern;
 mod lens;
 #[allow(dead_code)] // wired into the loop by a later task
 mod login;
