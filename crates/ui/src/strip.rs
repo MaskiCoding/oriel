@@ -1536,18 +1536,26 @@ impl Strip {
         };
         host.setMasksToBounds(true);
 
-        // Soft blobs of colour that drift past each other, not one gradient
-        // sweeping corner to corner: a sweep reads as a scan, and the eye
-        // follows it. Each blob is a radial fade to nothing, and each drifts on
-        // its own two periods — the x and y durations are deliberately unequal
-        // and mutually prime-ish, so the paths never resynchronise and the
-        // colour underneath keeps recombining instead of looping visibly.
+        // Fields of colour that drift past each other, not one gradient sweeping
+        // corner to corner: a sweep reads as a scan and the eye follows it.
+        //
+        // Each field is a radial fade to nothing, and each is far larger than
+        // the tile — two to three times over. That size is the whole trick. A
+        // blob the size of the tile shows its own edge and reads as a spotlight
+        // thrown on the window; at this scale only the gentle middle of the
+        // falloff ever lands on the tile, so the preview sits under one soft
+        // wash rather than under a circle. They are correspondingly faint,
+        // since four of them overlap everywhere.
+        //
+        // Each drifts on its own two periods, deliberately unequal and sharing
+        // no common factor, so the paths never resynchronise and the colour
+        // keeps recombining instead of looping visibly.
         let reach = bounds.size.width.max(bounds.size.height);
         for (red, green, blue, alpha, size, sway, x_secs, y_secs) in [
-            (0.30, 0.74, 1.00, 0.34, 0.95, 0.22, 13.0, 17.0),
-            (0.58, 0.42, 1.00, 0.30, 1.10, 0.26, 19.0, 11.0),
-            (0.34, 1.00, 0.78, 0.26, 0.85, 0.20, 23.0, 15.0),
-            (1.00, 0.48, 0.72, 0.24, 0.90, 0.24, 16.0, 21.0),
+            (0.30, 0.74, 1.00, 0.20, 2.4, 0.16, 13.0, 17.0),
+            (0.58, 0.42, 1.00, 0.18, 2.8, 0.18, 19.0, 11.0),
+            (0.34, 1.00, 0.78, 0.15, 2.2, 0.14, 23.0, 15.0),
+            (1.00, 0.48, 0.72, 0.14, 2.6, 0.17, 16.0, 21.0),
         ] {
             let span = reach * size;
             let blob = CAGradientLayer::new();
@@ -1562,6 +1570,7 @@ impl Strip {
             let colors: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
             for color in [
                 NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha),
+                NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha * 0.55),
                 NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 0.0),
             ] {
                 let cg = color.CGColor();
@@ -1574,7 +1583,7 @@ impl Strip {
                 let _: () = msg_send![&*blob, setStartPoint: NSPoint::new(0.5, 0.5)];
                 let _: () = msg_send![&*blob, setEndPoint: NSPoint::new(1.0, 1.0)];
             }
-            blob.setLocations(Some(&stops(&[0.0, 1.0])));
+            blob.setLocations(Some(&stops(&[0.0, 0.55, 1.0])));
             // Blended as light, not as paint. A translucent colour laid over a
             // dark preview composites toward grey — the chroma is crushed by
             // the background it is mixing with, which is why saturated stops
