@@ -4,20 +4,28 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, class, msg_send};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, class, define_class,
+    msg_send,
+};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImageScaling, NSImageView, NSPanel, NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen,
-    NSTextField, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImageScaling, NSImageView, NSPanel, NSPopUpMenuWindowLevel,
+    NSRunningApplication, NSScreen, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{
-    NSMutableAttributedString, NSPoint, NSPointInRect, NSRange, NSRect, NSSize, NSString,
+    NSMutableAttributedString, NSObjectProtocol, NSPoint, NSPointInRect, NSRange, NSRect, NSSize,
+    NSString,
 };
 use objc2_quartz_core::kCAGravityResizeAspect;
 
 use crate::look::{Look, ShowOn, Size, Style, Theme};
+
+/// Trackpad points (or equivalent) that must accumulate before one scroll step.
+const SCROLL_STEP: f64 = 40.0;
 
 /// One entry to render in the strip.
 pub struct Tile {
@@ -341,8 +349,39 @@ fn tile_width(aspect: f64) -> f64 {
 /// balanced to near-equal widths and centered, plus the panel size.
 struct Layout {
     origins: Vec<(f64, f64)>,
+    /// Tile indices per visual row, top row first.
+    rows: Vec<Vec<usize>>,
     width: f64,
     height: f64,
+}
+
+/// Index of the tile whose frame contains `point`, if any.
+fn hit_tile(frames: &[NSRect], point: NSPoint) -> Option<usize> {
+    frames.iter().position(|frame| NSPointInRect(point, *frame))
+}
+
+/// Fold a scroll delta into an accumulator; emit ±1 per `SCROLL_STEP` crossing.
+/// Positive `delta_y` (fingers up) yields −1; negative yields +1.
+fn scroll_steps(accum: &mut f64, delta_y: f64, precise: bool) -> Vec<i32> {
+    if delta_y == 0.0 {
+        return Vec::new();
+    }
+    let delta = if precise {
+        delta_y
+    } else {
+        delta_y.signum() * SCROLL_STEP
+    };
+    *accum += delta;
+    let mut out = Vec::new();
+    while *accum >= SCROLL_STEP {
+        *accum -= SCROLL_STEP;
+        out.push(-1);
+    }
+    while *accum <= -SCROLL_STEP {
+        *accum += SCROLL_STEP;
+        out.push(1);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -366,6 +405,7 @@ fn layout_sized(
     if widths.is_empty() {
         return Layout {
             origins: Vec::new(),
+            rows: Vec::new(),
             width: 2.0 * pad,
             height: 2.0 * pad + query_space,
         };
@@ -402,6 +442,7 @@ fn layout_sized(
     let width = content_w + 2.0 * pad;
     let height = count.mul_add(tile_h, (count - 1.0).max(0.0) * gap) + 2.0 * pad + query_space;
     let mut origins = vec![(0.0, 0.0); widths.len()];
+    let mut row_indices = Vec::with_capacity(rows.len());
     for (r, (indices, w)) in rows.iter().enumerate() {
         let mut x = pad + (content_w - w) / 2.0;
         let y = height - pad - query_space - as_f64(r + 1) * tile_h - as_f64(r) * gap;
@@ -409,9 +450,11 @@ fn layout_sized(
             origins[i] = (x, y);
             x += widths[i] + gap;
         }
+        row_indices.push(indices.clone());
     }
     Layout {
         origins,
+        rows: row_indices,
         width,
         height,
     }
@@ -467,12 +510,15 @@ fn list_layout(n: usize, row_w: f64, row_h: f64, gap: f64, pad: f64, query_space
         count.mul_add(row_h, (count - 1.0) * gap) + 2.0 * pad + query_space
     };
     let mut origins = Vec::with_capacity(n);
+    let mut rows = Vec::with_capacity(n);
     for i in 0..n {
         let y = height - pad - query_space - as_f64(i + 1) * row_h - as_f64(i) * gap;
         origins.push((pad, y));
+        rows.push(vec![i]);
     }
     Layout {
         origins,
+        rows,
         width,
         height,
     }
@@ -612,13 +658,185 @@ unsafe extern "C" {
     );
 }
 
+/// Shared mouse / layout state reached from both `Strip` and its content view.
+type ClickCb = Box<dyn FnMut(usize)>;
+type ScrollCb = Box<dyn FnMut(i32)>;
+type HoverCb = Box<dyn FnMut(usize)>;
+
+struct MouseState {
+    on_click: RefCell<Option<ClickCb>>,
+    on_scroll: RefCell<Option<ScrollCb>>,
+    on_hover: RefCell<Option<HoverCb>>,
+    hover_select: Cell<bool>,
+    scroll_accum: Cell<f64>,
+    last_hover: Cell<Option<usize>>,
+    frames: RefCell<Vec<NSRect>>,
+}
+
+impl MouseState {
+    fn new() -> Self {
+        Self {
+            on_click: RefCell::new(None),
+            on_scroll: RefCell::new(None),
+            on_hover: RefCell::new(None),
+            hover_select: Cell::new(false),
+            scroll_accum: Cell::new(0.0),
+            last_hover: Cell::new(None),
+            frames: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn fire_click(&self, index: usize) {
+        let mut slot = self.on_click.borrow_mut();
+        let Some(mut f) = slot.take() else {
+            return;
+        };
+        drop(slot);
+        f(index);
+        *self.on_click.borrow_mut() = Some(f);
+    }
+
+    fn fire_scroll(&self, delta: i32) {
+        let mut slot = self.on_scroll.borrow_mut();
+        let Some(mut f) = slot.take() else {
+            return;
+        };
+        drop(slot);
+        f(delta);
+        *self.on_scroll.borrow_mut() = Some(f);
+    }
+
+    fn fire_hover(&self, index: usize) {
+        let mut slot = self.on_hover.borrow_mut();
+        let Some(mut f) = slot.take() else {
+            return;
+        };
+        drop(slot);
+        f(index);
+        *self.on_hover.borrow_mut() = Some(f);
+    }
+}
+
+struct ContentIvars {
+    mouse: Rc<MouseState>,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OrielStripContentView"]
+    #[ivars = ContentIvars]
+    struct StripContentView;
+
+    unsafe impl NSObjectProtocol for StripContentView {}
+
+    impl StripContentView {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            let local = unsafe {
+                match self.superview() {
+                    Some(sv) => self.convertPoint_fromView(point, Some(&sv)),
+                    None => point,
+                }
+            };
+            if self.mouse_inRect(local, self.bounds()) {
+                Some(self.retain().into_super())
+            } else {
+                None
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let local = self.convertPoint_fromView(event.locationInWindow(), None);
+            let frames = self.ivars().mouse.frames.borrow();
+            if let Some(index) = hit_tile(&frames, local) {
+                drop(frames);
+                self.ivars().mouse.fire_click(index);
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let mouse = &self.ivars().mouse;
+            let mut accum = mouse.scroll_accum.get();
+            let steps = scroll_steps(
+                &mut accum,
+                event.scrollingDeltaY(),
+                event.hasPreciseScrollingDeltas(),
+            );
+            mouse.scroll_accum.set(accum);
+            for step in steps {
+                mouse.fire_scroll(step);
+            }
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            let mouse = &self.ivars().mouse;
+            if !mouse.hover_select.get() {
+                return;
+            }
+            let local = self.convertPoint_fromView(event.locationInWindow(), None);
+            let frames = mouse.frames.borrow();
+            let Some(index) = hit_tile(&frames, local) else {
+                return;
+            };
+            drop(frames);
+            if mouse.last_hover.get() == Some(index) {
+                return;
+            }
+            mouse.last_hover.set(Some(index));
+            mouse.fire_hover(index);
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            let areas = self.trackingAreas();
+            for area in areas {
+                self.removeTrackingArea(&area);
+            }
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+            if !self.ivars().mouse.hover_select.get() {
+                return;
+            }
+            let options = NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect;
+            // SAFETY: owner is self (the view); userInfo is unused.
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+                    options,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+        }
+    }
+);
+
+impl StripContentView {
+    fn new(mtm: MainThreadMarker, mouse: Rc<MouseState>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ContentIvars { mouse });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
 /// The resident overlay panel. Created once and kept alive: `show` builds the
 /// tile grid and orders it front, `select` moves the highlight without
 /// rebuilding, `hide` orders it out.
 pub struct Strip {
     mtm: MainThreadMarker,
     panel: Retained<NSPanel>,
-    content: Retained<NSView>,
+    content: Retained<StripContentView>,
     tiles: RefCell<Vec<Retained<NSView>>>,
     selected: Cell<usize>,
     look: Cell<Look>,
@@ -637,6 +855,9 @@ pub struct Strip {
     fade_out: Cell<bool>,
     /// Bumped on every `show` / `hide` so a mid-fade re-summon cancels the pending `orderOut`.
     fade_generation: Rc<Cell<u32>>,
+    mouse: Rc<MouseState>,
+    /// Tile indices per row from the last `show`, top row first.
+    rows: RefCell<Vec<Vec<usize>>>,
 }
 
 impl Strip {
@@ -657,7 +878,8 @@ impl Strip {
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
         panel.setHidesOnDeactivate(false);
 
-        let content = NSView::new(mtm);
+        let mouse = Rc::new(MouseState::new());
+        let content = StripContentView::new(mtm, Rc::clone(&mouse));
         content.setWantsLayer(true);
         if let Some(layer) = content.layer() {
             layer.setCornerRadius(18.0);
@@ -683,7 +905,39 @@ impl Strip {
             query_space: Cell::new(0.0),
             fade_out: Cell::new(false),
             fade_generation: Rc::new(Cell::new(0)),
+            mouse,
+            rows: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Called with the tile index when a tile is clicked.
+    pub fn on_click(&self, f: impl FnMut(usize) + 'static) {
+        *self.mouse.on_click.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Called with a delta (+1 / −1) when the strip is scrolled.
+    pub fn on_scroll(&self, f: impl FnMut(i32) + 'static) {
+        *self.mouse.on_scroll.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Called with the tile index the pointer moved onto; only fires when enabled.
+    pub fn on_hover(&self, f: impl FnMut(usize) + 'static) {
+        *self.mouse.on_hover.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_hover_select(&self, enabled: bool) {
+        self.mouse.hover_select.set(enabled);
+        self.panel.setAcceptsMouseMovedEvents(enabled);
+        if !enabled {
+            self.mouse.last_hover.set(None);
+        }
+        self.content.updateTrackingAreas();
+    }
+
+    /// Tile indices grouped into the rows of the layout last used by `show`,
+    /// top row first. Reflects the current style and scale.
+    pub fn rows(&self) -> Vec<Vec<usize>> {
+        self.rows.borrow().clone()
     }
 
     /// Optional fade on dismiss only. Off by default; nothing ever animates in.
@@ -767,14 +1021,20 @@ impl Strip {
             .setContentSize(NSSize::new(plan.width, plan.height));
 
         let mut views = Vec::with_capacity(tiles.len());
+        let mut frames = Vec::with_capacity(tiles.len());
         for (i, tile) in tiles.iter().enumerate() {
             let view = self.tile(tile, look.style, &m, dark);
             let (x, y) = plan.origins[i];
             view.setFrameOrigin(NSPoint::new(x, y));
+            frames.push(view.frame());
             self.content.addSubview(&view);
             views.push(view);
         }
         self.tiles.replace(views);
+        *self.mouse.frames.borrow_mut() = frames;
+        *self.rows.borrow_mut() = plan.rows;
+        self.mouse.scroll_accum.set(0.0);
+        self.mouse.last_hover.set(None);
         self.selected.set(usize::MAX);
         self.select(selected);
         self.sync_query_row();
@@ -819,15 +1079,21 @@ impl Strip {
         let dark = self.dark.get();
         let view = self.tile(tile, look.style, &m, dark);
         view.setFrameOrigin(slot.frame().origin);
+        let frame = view.frame();
         self.content.addSubview(&view);
         slot.removeFromSuperview();
         set_highlight(&view, index == self.selected.get(), dark);
         *slot = view;
+        if let Some(cached) = self.mouse.frames.borrow_mut().get_mut(index) {
+            *cached = frame;
+        }
     }
 
     pub fn hide(&self) {
         let stamp = self.fade_generation.get().wrapping_add(1);
         self.fade_generation.set(stamp);
+        self.mouse.last_hover.set(None);
+        self.mouse.scroll_accum.set(0.0);
         if !self.fade_out.get() {
             self.panel.setAlphaValue(1.0);
             self.panel.orderOut(None);
@@ -1353,6 +1619,43 @@ mod tests {
         assert_eq!(plan.origins[1].0, plan.origins[2].0);
         assert!(plan.origins[0].1 > plan.origins[1].1);
         assert!(plan.origins[1].1 > plan.origins[2].1);
+        assert_eq!(plan.rows, vec![vec![0], vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn gallery_rows_match_layout_groups() {
+        let plan = layout(&[100.0, 100.0, 100.0], 220.0);
+        assert_eq!(plan.rows, vec![vec![0, 1], vec![2]]);
+    }
+
+    #[test]
+    fn hit_tile_finds_containing_frame() {
+        let frames = [
+            NSRect::new(NSPoint::new(10.0, 10.0), NSSize::new(50.0, 40.0)),
+            NSRect::new(NSPoint::new(70.0, 10.0), NSSize::new(50.0, 40.0)),
+        ];
+        assert_eq!(hit_tile(&frames, NSPoint::new(30.0, 20.0)), Some(0));
+        assert_eq!(hit_tile(&frames, NSPoint::new(90.0, 20.0)), Some(1));
+        assert_eq!(hit_tile(&frames, NSPoint::new(5.0, 5.0)), None);
+    }
+
+    #[test]
+    fn scroll_steps_quantise_precise_deltas() {
+        let mut accum = 0.0;
+        assert!(scroll_steps(&mut accum, 10.0, true).is_empty());
+        assert!((accum - 10.0).abs() < 1e-9);
+        assert_eq!(scroll_steps(&mut accum, 35.0, true), vec![-1]);
+        assert!((accum - 5.0).abs() < 1e-9);
+        assert_eq!(scroll_steps(&mut accum, -85.0, true), vec![1, 1]);
+        assert!((accum - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scroll_steps_line_wheel_is_one_step() {
+        let mut accum = 0.0;
+        assert_eq!(scroll_steps(&mut accum, -1.0, false), vec![1]);
+        assert!((accum - 0.0).abs() < 1e-9);
+        assert_eq!(scroll_steps(&mut accum, 1.0, false), vec![-1]);
     }
 
     #[test]
