@@ -52,10 +52,6 @@ pub struct Tile {
     pub lantern: bool,
 }
 
-/// The lit mark: a single small pane with the light on. An oriel is a bay
-/// window, so the mark is a lit pane of it — not a bloom, not a spinner.
-const LANTERN_MARK: &str = "▪";
-
 /// Rose from Oriel's own icon. Deliberately not the warning-amber every other
 /// tool reaches for, and it never moves.
 fn lantern_color() -> Retained<NSColor> {
@@ -404,10 +400,6 @@ fn list_content_width(tiles: &[Tile], m: &Metrics, show: TitleShow, markers: boo
         if markers && !tile.badge.is_empty() {
             max_badge = max_badge.max(text_width(&tile.badge, m.badge_font));
         }
-        if tile.lantern {
-            // The mark shares the right edge with the state markers.
-            max_badge = max_badge.max(text_width(LANTERN_MARK, m.badge_font));
-        }
     }
     let icon_slot = m.caption_icon + 6.0;
     let badge_slot = if max_badge > 0.0 {
@@ -709,22 +701,45 @@ fn list_layout(
     }
 }
 
-/// The selection: the whole tile lifts — a tinted rounded backing plus an
-/// accent ring.
-fn set_highlight(tile: &NSView, on: bool, dark: bool) {
-    if let Some(layer) = tile.layer() {
-        let border = on.then(|| NSColor::controlAccentColor().CGColor());
-        layer.setBorderColor(border.as_deref());
-        layer.setBorderWidth(if on { 2.5 } else { 0.0 });
-        let backing = on.then(|| {
-            if dark {
-                NSColor::colorWithWhite_alpha(1.0, 0.13).CGColor()
-            } else {
-                NSColor::colorWithWhite_alpha(0.0, 0.08).CGColor()
-            }
-        });
-        layer.setBackgroundColor(backing.as_deref());
-    }
+/// The selection lifts the whole tile: a tinted backing plus an accent ring.
+/// A lit window lifts the same way but in rose, so a working agent reads at a
+/// glance without a badge to hunt for.
+///
+/// The two stay tellable apart when they land on the same tile: the ring always
+/// belongs to the selection, the wash always belongs to the light. A selected
+/// window that is also working keeps its accent ring over a rose pane.
+fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
+    let Some(layer) = tile.layer() else {
+        return;
+    };
+    let border = if on {
+        Some(NSColor::controlAccentColor().CGColor())
+    } else if lit {
+        Some(lantern_color().CGColor())
+    } else {
+        None
+    };
+    layer.setBorderColor(border.as_deref());
+    layer.setBorderWidth(if on || lit { 2.5 } else { 0.0 });
+
+    let backing = if lit {
+        // Light through a pane: strong enough to carry across the strip,
+        // never so strong the preview stops being readable.
+        Some(
+            lantern_color()
+                .colorWithAlphaComponent(if dark { 0.30 } else { 0.20 })
+                .CGColor(),
+        )
+    } else if on {
+        Some(if dark {
+            NSColor::colorWithWhite_alpha(1.0, 0.13).CGColor()
+        } else {
+            NSColor::colorWithWhite_alpha(0.0, 0.08).CGColor()
+        })
+    } else {
+        None
+    };
+    layer.setBackgroundColor(backing.as_deref());
 }
 
 /// An image view that scales its image to fill `side` in both directions.
@@ -1032,6 +1047,9 @@ pub struct Strip {
     content: Retained<StripContentView>,
     tiles: RefCell<Vec<Retained<NSView>>>,
     selected: Cell<usize>,
+    /// Which tiles are lit, parallel to `tiles` — `select` restyles from views
+    /// alone and still needs to know not to wipe the light.
+    lit: RefCell<Vec<bool>>,
     look: Cell<Look>,
     dark: Cell<bool>,
     /// Scale last applied by `show`, so `update_tile` rebuilds at the same size.
@@ -1091,6 +1109,7 @@ impl Strip {
             content,
             tiles: RefCell::new(Vec::new()),
             selected: Cell::new(0),
+            lit: RefCell::new(Vec::new()),
             look: Cell::new(Look::default()),
             dark: Cell::new(true),
             scale: Cell::new(SCALE_MEDIUM),
@@ -1197,6 +1216,7 @@ impl Strip {
             None => (1440.0, 900.0, None),
         };
 
+        *self.lit.borrow_mut() = tiles.iter().map(|t| t.lantern).collect();
         let aspects: Vec<f64> = tiles.iter().map(|t| t.aspect).collect();
         let scale = size_scale(
             look.size,
@@ -1242,6 +1262,11 @@ impl Strip {
         let mut frames = Vec::with_capacity(tiles.len());
         for (i, tile) in tiles.iter().enumerate() {
             let view = self.tile(tile, look.style, &m, dark);
+            // `select` only restyles the two tiles it moves between, so a lit
+            // window that is not the selection has to be lit here.
+            if tile.lantern {
+                set_highlight(&view, false, true, dark);
+            }
             let (x, y) = plan.origins[i];
             view.setFrameOrigin(NSPoint::new(x, y));
             frames.push(view.frame());
@@ -1278,10 +1303,12 @@ impl Strip {
             return;
         }
         let dark = self.dark.get();
+        let lit = self.lit.borrow();
+        let is_lit = |i: usize| lit.get(i).copied().unwrap_or(false);
         if let Some(old) = tiles.get(self.selected.get()) {
-            set_highlight(old, false, dark);
+            set_highlight(old, false, is_lit(self.selected.get()), dark);
         }
-        set_highlight(&tiles[index], true, dark);
+        set_highlight(&tiles[index], true, is_lit(index), dark);
         self.selected.set(index);
     }
 
@@ -1300,7 +1327,10 @@ impl Strip {
         let frame = view.frame();
         self.content.addSubview(&view);
         slot.removeFromSuperview();
-        set_highlight(&view, index == self.selected.get(), dark);
+        set_highlight(&view, index == self.selected.get(), tile.lantern, dark);
+        if let Some(slot) = self.lit.borrow_mut().get_mut(index) {
+            *slot = tile.lantern;
+        }
         *slot = view;
         if let Some(cached) = self.mouse.frames.borrow_mut().get_mut(index) {
             *cached = frame;
@@ -1520,17 +1550,6 @@ impl Strip {
 
         let mut text_end = width - m.inset;
         let look = self.look.get();
-        if tile.lantern {
-            let lamp = NSTextField::labelWithString(&NSString::from_str(LANTERN_MARK), self.mtm);
-            lamp.setFont(Some(&NSFont::systemFontOfSize(m.badge_font)));
-            lamp.setTextColor(Some(&lantern_color()));
-            lamp.sizeToFit();
-            let w = lamp.frame().size.width;
-            let y = base + (band_h - m.badge_font - 2.0).max(0.0) / 2.0;
-            lamp.setFrameOrigin(NSPoint::new(text_end - w, y));
-            view.addSubview(&lamp);
-            text_end -= w + 5.0;
-        }
         if look.markers && !tile.badge.is_empty() {
             let marks = NSTextField::labelWithString(&NSString::from_str(&tile.badge), self.mtm);
             marks.setFont(Some(&NSFont::systemFontOfSize(m.badge_font)));
