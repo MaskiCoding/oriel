@@ -222,3 +222,66 @@ pub fn bootstrap_config() -> config::Config {
         cfg
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file written on first run must mean exactly what the built-in
+    /// defaults mean, or a fresh install behaves differently from a bare one.
+    #[test]
+    fn default_toml_parses_to_the_default_config() {
+        assert_eq!(
+            config::parse(DEFAULT_TOML).unwrap(),
+            config::Config::default()
+        );
+    }
+
+    #[test]
+    fn hotkey_ids_round_trip() {
+        for index in 0..8 {
+            for backward in [false, true] {
+                assert_eq!(
+                    decode_hotkey_id(hotkey_id(index, backward)),
+                    (index, backward)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hold_flags_maps_each_modifier_and_ignores_shift() {
+        assert!(hold_flags(input::CMD).contains(CGEventFlags::MaskCommand));
+        assert!(hold_flags(input::OPTION).contains(CGEventFlags::MaskAlternate));
+        assert!(hold_flags(input::CONTROL).contains(CGEventFlags::MaskControl));
+        assert!(hold_flags(input::SHIFT).is_empty());
+    }
+
+    fn binding(key: u32, modifiers: u32) -> Binding {
+        Binding {
+            model: model::Lens::default(),
+            look: ui::Look::default(),
+            on_release: config::OnRelease::Jump,
+            hold: hold_flags(modifiers),
+            key,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn duplicate_triggers_are_claimed_once() {
+        let bindings = [binding(48, input::CMD), binding(48, input::CMD)];
+        let triggers = triggers_for(&bindings);
+        let combos: Vec<(u32, u32)> = triggers.iter().map(|t| (t.key, t.modifiers)).collect();
+        let mut unique = combos.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(combos.len(), unique.len(), "a combo was registered twice");
+    }
+
+    #[test]
+    fn a_shift_trigger_does_not_claim_a_reverse_variant() {
+        let bindings = [binding(48, input::CMD | input::SHIFT)];
+        assert_eq!(triggers_for(&bindings).len(), 1);
+    }
+}
