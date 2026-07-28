@@ -131,6 +131,12 @@ pub fn bundle_id(pid: i32, cache: &mut HashMap<i32, Option<String>>) -> Option<&
     cache.get(&pid).and_then(Option::as_deref)
 }
 
+/// Drops cache entries for processes that are gone. macOS reuses pids, so a
+/// stale entry would eventually hand one app's rules to an unrelated one.
+pub fn prune_bundles(cache: &mut HashMap<i32, Option<String>>, alive: &HashSet<i32>) {
+    cache.retain(|pid, _| alive.contains(pid));
+}
+
 fn hidden_by_rule(
     rules: &model::Rules,
     bundles: &mut HashMap<i32, Option<String>>,
@@ -150,6 +156,53 @@ pub fn snapshot(ws: &winsrv::WindowServer, mru: &mut model::Mru) -> Snapshot {
     let rules = model::Rules::defaults();
     let mut bundles = HashMap::new();
     snapshot_with(ws, mru, &rules, &mut bundles)
+}
+
+/// Adds one synthetic entry per running app that owns no window (PRD §4.3),
+/// and prunes the bundle-ID cache to processes that still exist.
+fn append_windowless(
+    rules: &model::Rules,
+    bundles: &mut HashMap<i32, Option<String>>,
+    owned_pids: &HashSet<i32>,
+    out_windows: &mut Vec<model::Window>,
+    meta: &mut HashMap<model::WindowId, Meta>,
+) {
+    let running = windowless_apps(owned_pids);
+    // Everything alive right now: windows we saw, plus every running app.
+    let mut alive: HashSet<i32> = owned_pids.clone();
+    alive.extend(running.iter().map(|(pid, _)| *pid));
+    prune_bundles(bundles, &alive);
+
+    for (pid, app_name) in running {
+        let title = model::WindowState::tile_title(None, None, &app_name);
+        if hidden_by_rule(rules, bundles, pid, &title, false) {
+            continue;
+        }
+        let id = windowless_id(pid);
+        meta.insert(
+            id,
+            Meta {
+                pid,
+                aspect: FALLBACK_ASPECT,
+                badge: String::new(),
+            },
+        );
+        out_windows.push(model::Window {
+            id,
+            app: pid,
+            app_name,
+            title,
+            state: model::WindowState::decode(0, 0),
+            fullscreen: false,
+            space: None,
+            space_visible: true,
+            space_ordinal: 0,
+            screen: 0,
+            created: u64::from(id.0),
+            is_main: true,
+            windowless: true,
+        });
+    }
 }
 
 pub fn snapshot_with(
@@ -229,36 +282,7 @@ pub fn snapshot_with(
         });
     }
 
-    for (pid, app_name) in windowless_apps(&owned_pids) {
-        let title = model::WindowState::tile_title(None, None, &app_name);
-        if hidden_by_rule(rules, bundles, pid, &title, false) {
-            continue;
-        }
-        let id = windowless_id(pid);
-        meta.insert(
-            id,
-            Meta {
-                pid,
-                aspect: FALLBACK_ASPECT,
-                badge: String::new(),
-            },
-        );
-        out_windows.push(model::Window {
-            id,
-            app: pid,
-            app_name,
-            title,
-            state: model::WindowState::decode(0, 0),
-            fullscreen: false,
-            space: None,
-            space_visible: true,
-            space_ordinal: 0,
-            screen: 0,
-            created: u64::from(id.0),
-            is_main: true,
-            windowless: true,
-        });
-    }
+    append_windowless(rules, bundles, &owned_pids, &mut out_windows, &mut meta);
 
     Snapshot {
         windows: out_windows,

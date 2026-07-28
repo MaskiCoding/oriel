@@ -211,21 +211,31 @@ impl Metrics {
     }
 }
 
+/// The chosen size is a **ceiling**, not a promise. The strip never scrolls
+/// (PRD §4.6), so a fixed size that would not fit densifies down from there
+/// exactly as `Auto` does — a large size with sixty windows still fits.
 fn size_scale(size: Size, style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
-    match size {
+    let ceiling = match size {
         Size::Small => SCALE_SMALL,
         Size::Medium => SCALE_MEDIUM,
-        Size::Large => SCALE_LARGE,
-        Size::Auto => auto_scale(style, tiles, screen_w, screen_h),
-    }
+        // Auto has no ceiling of its own beyond the largest step.
+        Size::Large | Size::Auto => SCALE_LARGE,
+    };
+    scale_under(ceiling, style, tiles, screen_w, screen_h)
 }
 
 /// Picks a scale so every tile fits on one screen for the active style. More
 /// windows never yield a larger scale; the floor keeps a huge session readable
 /// instead of collapsing to zero.
+#[cfg(test)]
 fn auto_scale(style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
+    scale_under(SCALE_LARGE, style, tiles, screen_w, screen_h)
+}
+
+/// Largest candidate scale at or below `ceiling` whose panel fits the screen.
+fn scale_under(ceiling: f64, style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
     if tiles == 0 || screen_w <= 0.0 || screen_h <= 0.0 {
-        return SCALE_MEDIUM;
+        return ceiling.min(SCALE_MEDIUM);
     }
     // List is a single column — densify below the shared floor when needed.
     let candidates: &[f64] = match style {
@@ -263,7 +273,7 @@ fn auto_scale(style: Style, tiles: usize, screen_w: f64, screen_h: f64) -> f64 {
         ],
     };
     for &scale in candidates {
-        if panel_fits(style, tiles, screen_w, screen_h, scale) {
+        if scale <= ceiling && panel_fits(style, tiles, screen_w, screen_h, scale) {
             return scale;
         }
     }
@@ -1587,6 +1597,37 @@ mod tests {
         let plan = list_layout(9, long, row, m.list_gap, m.list_pad, 0.0);
         // Nine dense rows fit a laptop-height screen with room to spare.
         assert!(plan.height < 900.0);
+    }
+
+    #[test]
+    fn fixed_sizes_are_a_ceiling_that_still_fits() {
+        // A fixed size must never make the strip overflow: it caps the scale,
+        // and the layout still densifies below it when there are many windows.
+        for style in [Style::Gallery, Style::Icons, Style::List] {
+            for (size, ceiling) in [
+                (Size::Small, SCALE_SMALL),
+                (Size::Medium, SCALE_MEDIUM),
+                (Size::Large, SCALE_LARGE),
+            ] {
+                for &n in &[1usize, 8, 40, 120] {
+                    let s = size_scale(size, style, n, 1440.0, 900.0);
+                    assert!(s <= ceiling, "{style:?} {size:?} n={n}: {s} above ceiling");
+                    assert!(
+                        panel_fits(style, n, 1440.0, 900.0, s),
+                        "{style:?} {size:?} n={n}: scale {s} overflows"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_screen_shrinks_a_large_size() {
+        // Same window count, Large requested: the smaller screen must not get
+        // the same scale as the roomy one.
+        let big = size_scale(Size::Large, Style::Gallery, 30, 2560.0, 1440.0);
+        let small = size_scale(Size::Large, Style::Gallery, 30, 1280.0, 800.0);
+        assert!(small <= big);
     }
 
     #[test]
