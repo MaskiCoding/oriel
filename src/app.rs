@@ -1426,15 +1426,16 @@ fn install_mouse(app: &Rc<RefCell<App>>) {
             app.borrow_mut().scroll_selection(delta);
         }
     });
-    let hover = a.controls.hover_select;
-    a.strip.set_hover_select(hover);
-    if hover {
-        a.strip.on_hover(|index| {
-            if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
-                app.borrow_mut().hover_tile(index);
-            }
-        });
-    }
+    // Register unconditionally: the strip gates delivery on its own
+    // `hover_select` flag, so this costs nothing while hover is off — and
+    // turning it on later actually works, which a boot-time-only registration
+    // silently prevented.
+    a.strip.on_hover(|index| {
+        if let Some(app) = APP.with(|slot| slot.borrow().upgrade()) {
+            app.borrow_mut().hover_tile(index);
+        }
+    });
+    a.strip.set_hover_select(a.controls.hover_select);
 }
 
 fn boot_triggers(app: &Rc<RefCell<App>>, want_menubar: bool) -> bool {
