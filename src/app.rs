@@ -1223,10 +1223,23 @@ impl App {
                     println!("config: save failed — {err}");
                 }
             });
+            // Closing the window puts Oriel back to a menu-bar agent.
+            settings.on_close(|| {
+                if let Some(mtm) = MainThreadMarker::new() {
+                    NSApplication::sharedApplication(mtm)
+                        .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+                }
+            });
             self.settings = Some(settings);
         }
+        // A settings window is a real window, so become a real app while it is
+        // up: that is what puts Oriel in the Dock and in ⌘⇥, and what lets
+        // choosing Settings again bring an already-open window forward instead
+        // of ordering it front behind everything.
+        let ns_app = NSApplication::sharedApplication(self.mtm);
+        ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         if let Some(settings) = &self.settings {
-            settings.show();
+            settings.show(self.mtm);
         }
     }
 

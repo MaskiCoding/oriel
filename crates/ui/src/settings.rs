@@ -5,12 +5,16 @@ use config::{
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSControlStateValueOff, NSControlStateValueOn, NSFont,
-    NSPopUpButton, NSSlider, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSButton, NSControlStateValueOff, NSControlStateValueOn,
+    NSFont, NSPopUpButton, NSSlider, NSTextField, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 
 const WIN_W: f64 = 560.0;
 const WIN_H: f64 = 800.0;
@@ -59,6 +63,7 @@ struct SettingsIvars {
     selected_lens: Cell<usize>,
     suppress: Cell<bool>,
     widgets: OnceCell<Widgets>,
+    on_close: RefCell<Option<Box<dyn FnMut()>>>,
 }
 
 define_class!(
@@ -68,6 +73,22 @@ define_class!(
     struct SettingsController;
 
     unsafe impl NSObjectProtocol for SettingsController {}
+
+    unsafe impl NSWindowDelegate for SettingsController {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            // Take before calling: the handler drops the app back to a menu-bar
+            // agent and must be free to touch this controller.
+            let taken = self.ivars().on_close.borrow_mut().take();
+            if let Some(mut cb) = taken {
+                cb();
+                let mut slot = self.ivars().on_close.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(cb);
+                }
+            }
+        }
+    }
 
     impl SettingsController {
         #[unsafe(method(changed:))]
@@ -112,6 +133,7 @@ impl SettingsController {
             selected_lens: Cell::new(0),
             suppress: Cell::new(false),
             widgets: OnceCell::new(),
+            on_close: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -295,6 +317,7 @@ impl Settings {
             .set(widgets)
             .unwrap_or_else(|_| panic!("settings widgets set once"));
         controller.rebuild_lens_picker();
+        window.setDelegate(Some(ProtocolObject::from_ref(&*controller)));
         Self { window, controller }
     }
 
@@ -306,8 +329,22 @@ impl Settings {
         self.controller.rebuild_lens_picker();
     }
 
-    pub fn show(&self) {
+    /// Runs when the user closes the window, so the caller can drop the app
+    /// back to a menu-bar agent.
+    pub fn on_close(&self, f: impl FnMut() + 'static) {
+        *self.controller.ivars().on_close.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Brings the window forward *and* the app with it. Ordering front alone
+    /// leaves it buried behind other apps when Oriel is running as an agent.
+    pub fn show(&self, mtm: MainThreadMarker) {
+        // `activate()` obeys cooperative activation and declines to take focus
+        // from whatever is frontmost, which is exactly the case here: the user
+        // chose Settings from the menu bar while another app was active.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
         self.window.makeKeyAndOrderFront(None);
+        self.window.orderFrontRegardless();
     }
 
     pub fn hide(&self) {

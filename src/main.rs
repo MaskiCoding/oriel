@@ -299,7 +299,7 @@ fn settings_demo(cfg: &config::Config) {
             edited.lenses.len()
         );
     });
-    settings.show();
+    settings.show(mtm);
     app.run();
 }
 
