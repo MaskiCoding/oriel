@@ -1,4 +1,5 @@
 mod app;
+mod lens;
 #[allow(dead_code)] // wired into the loop by a later task
 mod login;
 #[allow(dead_code)]
@@ -98,7 +99,8 @@ fn main() {
         println!("must run on the main thread");
         return;
     };
-    app::run(mtm);
+    let cfg = lens::bootstrap_config();
+    app::run(mtm, &cfg);
 }
 
 /// Captures a single window to a PNG on disk — proof the private capture path
