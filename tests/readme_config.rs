@@ -20,6 +20,24 @@ fn readme_example_parses_with_the_real_schema() {
 
 /// Every `[section]` the shipped first-run file writes must appear in the
 /// README, or the documented schema is quietly incomplete.
+/// The two lantern switches are independent on purpose: the count without the
+/// drift is a real preference, so neither may quietly imply the other.
+#[test]
+fn the_lantern_switches_are_independent() {
+    let cfg = config::Config::default();
+    assert!(cfg.lantern.enabled);
+    assert!(cfg.lantern.drift);
+
+    let quiet: config::Config =
+        config::parse(&config::to_toml(&cfg).replace("drift = true", "drift = false"))
+            .expect("drift may be turned off on its own");
+    assert!(
+        quiet.lantern.enabled,
+        "the count survives without the drift"
+    );
+    assert!(!quiet.lantern.drift);
+}
+
 #[test]
 fn readme_documents_every_shipped_section() {
     let readme = include_str!("../README.md");

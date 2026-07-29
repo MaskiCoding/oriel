@@ -134,6 +134,10 @@ pub struct Peek {
 #[serde(deny_unknown_fields, default)]
 pub struct Lantern {
     pub enabled: bool,
+    /// Whether a working window is marked in the strip. Off keeps the detection
+    /// and the menu-bar count but leaves the tiles alone — the drift is the one
+    /// moving thing in the strip, and not everyone wants it there.
+    pub drift: bool,
     pub binaries: Vec<String>,
 }
 
@@ -141,6 +145,7 @@ impl Default for Lantern {
     fn default() -> Self {
         Self {
             enabled: true,
+            drift: true,
             binaries: [
                 "claude",
                 "cursor-agent",

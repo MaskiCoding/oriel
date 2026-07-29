@@ -1141,7 +1141,13 @@ impl App {
             .candidates
             .iter()
             .enumerate()
-            .map(|(i, c)| (i, c, self.lantern.working(c.pid)))
+            .map(|(i, c)| {
+                (
+                    i,
+                    c,
+                    self.config.lantern.drift && self.lantern.working(c.pid),
+                )
+            })
             .filter(|(i, _, want)| self.lit.get(*i).copied().unwrap_or(false) != *want)
             .map(|(i, c, want)| (i, c.clone(), want))
             .collect();
@@ -1165,10 +1171,17 @@ impl App {
         };
         let cache = &mut self.cache;
         let lantern = &self.lantern;
+        let drift = self.config.lantern.drift;
         let tiles: Vec<ui::Tile> = live
             .candidates
             .iter()
-            .map(|c| tile_of(c, cache.shown(c.wid).cloned(), lantern.working(c.pid)))
+            .map(|c| {
+                tile_of(
+                    c,
+                    cache.shown(c.wid).cloned(),
+                    drift && lantern.working(c.pid),
+                )
+            })
             .collect();
         self.lit = tiles.iter().map(|t| t.lantern).collect();
         self.strip.show(&tiles, live.selection.selected());
@@ -1258,7 +1271,7 @@ impl App {
             return;
         };
         let candidate = &live.candidates[index];
-        let lit = self.lantern.working(candidate.pid);
+        let lit = self.config.lantern.drift && self.lantern.working(candidate.pid);
         self.strip
             .update_tile(index, &tile_of(candidate, Some(image), lit));
     }

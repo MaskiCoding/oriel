@@ -14,7 +14,8 @@ menubar_icon = true
 enabled = false
 
 [lantern]
-enabled = true                 # drift a window that has an agent working in it
+enabled = true                 # detect agents at all; off also clears the menu-bar count
+drift = true                   # and mark the working window in the strip
 binaries = ["claude", "cursor-agent", "codex", "aider", "gemini", "opencode"]
 
 [animation]
