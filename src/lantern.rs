@@ -15,13 +15,21 @@ pub const DEFAULT_BINARIES: [&str; 6] = [
 
 /// CPU an agent's subtree must burn between samples to count as working.
 ///
-/// Measured over thirty two-second windows: a working agent burned 180 ms at
-/// the lowest, 290 ms at the median; the same agent parked burned 3.5 ms. The
-/// gap is fifty-fold, and the old 8 ms sat down in the noise where a chatty
-/// MCP server or a stray background child could clear it on its own and light
-/// a window with nothing happening in it. This sits twenty times above idle
-/// and still leaves more than double the headroom under the quietest real work.
-pub const THRESHOLD: Duration = Duration::from_millis(80);
+/// Measured with a reader that tells the truth: a parked agent sits at 20 ms
+/// per two-second window (median of 76 samples taken while genuinely idle),
+/// with a spiky tail reaching 360 ms as it wakes to redraw. A working one runs
+/// from 225 ms into the thousands. The tail overlaps the bottom of working, so
+/// height alone cannot separate them — see [`CONFIRM`].
+pub const THRESHOLD: Duration = Duration::from_millis(150);
+
+/// Consecutive samples over [`THRESHOLD`] before a window lights.
+///
+/// What separates a parked agent from a working one is not how high it reaches
+/// but whether it stays there: idle spikes are single samples, work is
+/// sustained. Requiring two in a row costs two seconds of latency at the start
+/// of a task and removes the isolated spikes that would otherwise light a
+/// window for a full latch over nothing.
+const CONFIRM: usize = 2;
 
 /// An agent waiting on the model burns nothing at all while still very much
 /// working — measured, a busy agent burns CPU in every 500 ms window it is
@@ -38,6 +46,8 @@ pub struct Lantern {
     binaries: Vec<String>,
     prev: Vec<model::Proc>,
     lit: HashMap<i32, (usize, Instant)>,
+    /// Consecutive samples each app has been over the threshold for.
+    streak: HashMap<i32, usize>,
 }
 
 impl Lantern {
@@ -46,6 +56,7 @@ impl Lantern {
             binaries,
             prev: Vec::new(),
             lit: HashMap::new(),
+            streak: HashMap::new(),
         }
     }
 
@@ -59,9 +70,15 @@ impl Lantern {
         // The first sample has no predecessor to difference against.
         if !self.prev.is_empty() {
             let lit = model::lit(&self.prev, &now, &self.binaries, THRESHOLD, roots);
+            let over = model::by_owner(&lit);
             let at = Instant::now();
-            for (app, count) in model::by_owner(&lit) {
-                self.lit.insert(app, (count, at));
+            self.streak.retain(|app, _| over.contains_key(app));
+            for (app, count) in over {
+                let streak = self.streak.entry(app).or_default();
+                *streak += 1;
+                if *streak >= CONFIRM {
+                    self.lit.insert(app, (count, at));
+                }
             }
             self.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
         }
