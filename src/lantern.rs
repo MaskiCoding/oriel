@@ -3,16 +3,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// The commands worth watching for. A user can add their own.
-pub const DEFAULT_BINARIES: [&str; 6] = [
-    "claude",
-    "cursor-agent",
-    "codex",
-    "aider",
-    "gemini",
-    "opencode",
-];
-
 /// CPU an agent's subtree must burn between samples to count as working.
 ///
 /// Measured with a reader that tells the truth: a parked agent sits at 20 ms
@@ -119,7 +109,7 @@ mod tests {
     #[test]
     fn the_probe_example_agrees_with_the_shipping_constants() {
         let example = include_str!("../crates/proctable/examples/probe.rs");
-        for binary in DEFAULT_BINARIES {
+        for binary in config::Lantern::default().binaries {
             assert!(
                 example.contains(&format!("\"{binary}\"")),
                 "probe is missing agent binary {binary}"

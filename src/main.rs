@@ -158,10 +158,9 @@ fn write_png(image: &objc2_core_graphics::CGImage, path: &str) -> bool {
 /// number the decision is made from.
 #[cfg(debug_assertions)]
 fn lantern_probe() {
-    let binaries: Vec<String> = lantern::DEFAULT_BINARIES
-        .iter()
-        .map(|b| (*b).to_string())
-        .collect();
+    // The shipped default rather than a second list: a diagnostic that watches
+    // for different commands than the app is not a diagnostic.
+    let binaries = config::Lantern::default().binaries;
     let roots = snapshot::app_pids();
 
     let sample = || {
