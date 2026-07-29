@@ -36,9 +36,9 @@ pub struct Lantern {
     binaries: Vec<String>,
     prev: Vec<model::Proc>,
     reader: proctable::Reader,
-    lit: HashMap<i32, (usize, Instant)>,
+    lit: HashMap<model::Pid, (usize, Instant)>,
     /// Consecutive samples each app has been over the threshold for.
-    streak: HashMap<i32, usize>,
+    streak: HashMap<model::Pid, usize>,
 }
 
 impl Lantern {
@@ -54,7 +54,7 @@ impl Lantern {
 
     /// Samples the process table and refreshes the lit set. `roots` are the pids
     /// of apps with windows; work is attributed to the nearest one above it.
-    pub fn poll(&mut self, roots: &[i32]) {
+    pub fn poll(&mut self, roots: &[model::Pid]) {
         let mut now = proctable::table();
         let under = model::descendants(&now, roots);
         self.reader.detail(&mut now, &under);
@@ -91,7 +91,7 @@ impl Lantern {
     }
 
     /// Whether this app has an agent working inside it.
-    pub fn working(&self, app: i32) -> bool {
+    pub fn working(&self, app: model::Pid) -> bool {
         self.lit.contains_key(&app)
     }
 
@@ -127,22 +127,22 @@ mod tests {
         );
     }
 
-    fn own_pid() -> i32 {
-        i32::try_from(std::process::id()).expect("pids fit in i32 on macOS")
+    fn own_pid() -> model::Pid {
+        model::Pid(i32::try_from(std::process::id()).expect("pids fit in i32 on macOS"))
     }
 
     /// A table where `agent` sits under `app` and has burned `cpu`.
     fn forest(app: i32, agent: i32, cpu: Duration) -> Vec<model::Proc> {
         vec![
             model::Proc {
-                pid: app,
-                ppid: 0,
+                pid: model::Pid(app),
+                ppid: model::Pid(0),
                 name: "Terminal".into(),
                 cpu: Duration::ZERO,
             },
             model::Proc {
-                pid: agent,
-                ppid: app,
+                pid: model::Pid(agent),
+                ppid: model::Pid(app),
                 name: "claude".into(),
                 cpu,
             },
@@ -156,7 +156,13 @@ mod tests {
         for cpu in samples {
             let now = forest(1, 2, *cpu);
             if !lantern.prev.is_empty() {
-                let lit = model::lit(&lantern.prev, &now, &lantern.binaries, THRESHOLD, &[1]);
+                let lit = model::lit(
+                    &lantern.prev,
+                    &now,
+                    &lantern.binaries,
+                    THRESHOLD,
+                    &[model::Pid(1)],
+                );
                 let over = model::by_owner(&lit);
                 let at = Instant::now();
                 lantern.streak.retain(|app, _| over.contains_key(app));
@@ -170,7 +176,7 @@ mod tests {
                 lantern.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
             }
             lantern.prev = now;
-            out.push(lantern.working(1));
+            out.push(lantern.working(model::Pid(1)));
         }
         out
     }
@@ -202,11 +208,11 @@ mod tests {
     fn a_reset_makes_the_next_sample_meaningless_on_purpose() {
         let mut lantern = Lantern::new(vec!["claude".into()]);
         lantern.prev = forest(1, 2, Duration::from_secs(9));
-        lantern.streak.insert(1, 5);
-        lantern.lit.insert(1, (1, Instant::now()));
+        lantern.streak.insert(model::Pid(1), 5);
+        lantern.lit.insert(model::Pid(1), (1, Instant::now()));
         lantern.reset();
         assert!(lantern.prev.is_empty());
-        assert!(!lantern.working(1));
+        assert!(!lantern.working(model::Pid(1)));
         assert_eq!(lantern.count(), 0);
     }
 

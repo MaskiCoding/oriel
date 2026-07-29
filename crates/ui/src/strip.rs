@@ -703,7 +703,22 @@ fn list_layout(
 ///
 /// The two stay tellable apart when they land on the same tile: the accent ring
 /// always belongs to the selection, the shimmer always belongs to the light.
-fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
+/// How a tile should be drawn. Named rather than three bare bools: the call
+/// sites read `Emphasis { selected, lit, dark }` instead of `(true, false,
+/// true)`, which cannot be silently mis-ordered.
+#[derive(Clone, Copy)]
+struct Emphasis {
+    selected: bool,
+    lit: bool,
+    dark: bool,
+}
+
+fn set_highlight(tile: &NSView, how: Emphasis) {
+    let Emphasis {
+        selected: on,
+        lit,
+        dark,
+    } = how;
     let Some(layer) = tile.layer() else {
         return;
     };
@@ -1464,7 +1479,14 @@ impl Strip {
             // `select` only restyles the two tiles it moves between, so a lit
             // window that is not the selection has to be lit here.
             if tile.lantern {
-                set_highlight(&view, false, true, dark);
+                set_highlight(
+                    &view,
+                    Emphasis {
+                        selected: false,
+                        lit: true,
+                        dark,
+                    },
+                );
                 let glass = self.lantern_glass(view.bounds(), drift_seed(tile));
                 view.addSubview(&glass);
                 if let Some(slot) = self.lanterns.borrow_mut().get_mut(i) {
@@ -1555,7 +1577,14 @@ impl Strip {
                 );
             }
         }
-        set_highlight(view, index == self.selected.get(), on, self.dark.get());
+        set_highlight(
+            view,
+            Emphasis {
+                selected: index == self.selected.get(),
+                lit: on,
+                dark: self.dark.get(),
+            },
+        );
     }
 
     /// Moves the highlight to `index` by restyling two tiles — the cheap path
@@ -1569,9 +1598,23 @@ impl Strip {
         let lit = self.lit.borrow();
         let is_lit = |i: usize| lit.get(i).copied().unwrap_or(false);
         if let Some(old) = tiles.get(self.selected.get()) {
-            set_highlight(old, false, is_lit(self.selected.get()), dark);
+            set_highlight(
+                old,
+                Emphasis {
+                    selected: false,
+                    lit: is_lit(self.selected.get()),
+                    dark,
+                },
+            );
         }
-        set_highlight(&tiles[index], true, is_lit(index), dark);
+        set_highlight(
+            &tiles[index],
+            Emphasis {
+                selected: true,
+                lit: is_lit(index),
+                dark,
+            },
+        );
         self.selected.set(index);
     }
 
@@ -1596,7 +1639,14 @@ impl Strip {
         // shimmer kept snapping back to the same phase. `set_lantern` owns it;
         // this only carries what already exists onto the new view.
         let lit = self.lit.borrow().get(index).copied().unwrap_or(false);
-        set_highlight(&view, index == self.selected.get(), lit, dark);
+        set_highlight(
+            &view,
+            Emphasis {
+                selected: index == self.selected.get(),
+                lit,
+                dark,
+            },
+        );
         if let Some(glass) = self.lanterns.borrow().get(index).and_then(Clone::clone) {
             glass.removeFromSuperview();
             glass.setFrame(view.bounds());

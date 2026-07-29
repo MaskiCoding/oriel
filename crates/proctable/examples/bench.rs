@@ -16,9 +16,9 @@ fn main() {
         total_n = table.len();
 
         // stand in for every app that can own a window
-        let roots: Vec<i32> = table
+        let roots: Vec<model::Pid> = table
             .iter()
-            .filter(|p| p.ppid == 1)
+            .filter(|p| p.ppid == model::Pid(1))
             .map(|p| p.pid)
             .collect();
 

@@ -16,13 +16,15 @@
 //! attribution reaches the app a window belongs to, never the pane inside it.
 
 use std::collections::{HashMap, HashSet};
+
+use crate::Pid;
 use std::time::Duration;
 
 /// One process as the kernel reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proc {
-    pub pid: i32,
-    pub ppid: i32,
+    pub pid: Pid,
+    pub ppid: Pid,
     pub name: String,
     /// CPU time burned since this process started.
     pub cpu: Duration,
@@ -31,10 +33,10 @@ pub struct Proc {
 /// An agent found to be working, and the app whose windows should light up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lit {
-    pub agent: i32,
+    pub agent: Pid,
     pub name: String,
     /// The ancestor from `roots` this agent runs under, if any.
-    pub owner: Option<i32>,
+    pub owner: Option<Pid>,
 }
 
 /// Agents that burned more than `threshold` of CPU across their subtree between
@@ -49,17 +51,17 @@ pub fn lit(
     after: &[Proc],
     binaries: &[String],
     threshold: Duration,
-    roots: &[i32],
+    roots: &[Pid],
 ) -> Vec<Lit> {
-    let was: HashMap<i32, Duration> = before.iter().map(|p| (p.pid, p.cpu)).collect();
-    let parent: HashMap<i32, i32> = after.iter().map(|p| (p.pid, p.ppid)).collect();
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    let was: HashMap<Pid, Duration> = before.iter().map(|p| (p.pid, p.cpu)).collect();
+    let parent: HashMap<Pid, Pid> = after.iter().map(|p| (p.pid, p.ppid)).collect();
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for p in after {
         children.entry(p.ppid).or_default().push(p.pid);
     }
-    let now: HashMap<i32, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
+    let now: HashMap<Pid, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
 
-    let is_agent: HashSet<i32> = after
+    let is_agent: HashSet<Pid> = after
         .iter()
         .filter(|p| binaries.iter().any(|b| b == &p.name))
         .map(|p| p.pid)
@@ -86,11 +88,11 @@ pub fn lit(
 /// a nested one is dark while the nested one is lit. Without this an orchestrator
 /// and each of its workers would all claim the same work.
 fn burned(
-    pid: i32,
-    children: &HashMap<i32, Vec<i32>>,
-    now: &HashMap<i32, Duration>,
-    was: &HashMap<i32, Duration>,
-    agents: &HashSet<i32>,
+    pid: Pid,
+    children: &HashMap<Pid, Vec<Pid>>,
+    now: &HashMap<Pid, Duration>,
+    was: &HashMap<Pid, Duration>,
+    agents: &HashSet<Pid>,
 ) -> Duration {
     let mut total = Duration::ZERO;
     let mut stack = vec![pid];
@@ -98,7 +100,7 @@ fn burned(
     // still lets the same process be summed repeatedly on the way round, which
     // inflates the total; remembering what has been counted is what makes the
     // sum right rather than merely finite.
-    let mut seen: HashSet<i32> = HashSet::new();
+    let mut seen: HashSet<Pid> = HashSet::new();
     while let Some(p) = stack.pop() {
         if !seen.insert(p) {
             continue;
@@ -117,14 +119,14 @@ fn burned(
 }
 
 /// Nearest ancestor of `pid` that is one of `roots`.
-fn owner_of(pid: i32, parent: &HashMap<i32, i32>, roots: &[i32]) -> Option<i32> {
+fn owner_of(pid: Pid, parent: &HashMap<Pid, Pid>, roots: &[Pid]) -> Option<Pid> {
     let mut cur = pid;
     for _ in 0..parent.len() {
         if roots.contains(&cur) {
             return Some(cur);
         }
         match parent.get(&cur) {
-            Some(&next) if next != cur && next > 0 => cur = next,
+            Some(&next) if next != cur && next.0 > 0 => cur = next,
             _ => return None,
         }
     }
@@ -134,14 +136,14 @@ fn owner_of(pid: i32, parent: &HashMap<i32, i32>, roots: &[i32]) -> Option<i32> 
 /// What an agent's subtree actually burned between two samples — the number
 /// [`lit`] compares against its threshold. Exposed so a window that is not
 /// lighting up can be told apart from an agent that is not working.
-pub fn burn(before: &[Proc], after: &[Proc], pid: i32, binaries: &[String]) -> Duration {
-    let was: HashMap<i32, Duration> = before.iter().map(|p| (p.pid, p.cpu)).collect();
-    let now: HashMap<i32, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+pub fn burn(before: &[Proc], after: &[Proc], pid: Pid, binaries: &[String]) -> Duration {
+    let was: HashMap<Pid, Duration> = before.iter().map(|p| (p.pid, p.cpu)).collect();
+    let now: HashMap<Pid, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for p in after {
         children.entry(p.ppid).or_default().push(p.pid);
     }
-    let agents: HashSet<i32> = after
+    let agents: HashSet<Pid> = after
         .iter()
         .filter(|p| binaries.iter().any(|b| b == &p.name))
         .map(|p| p.pid)
@@ -152,17 +154,17 @@ pub fn burn(before: &[Proc], after: &[Proc], pid: i32, binaries: &[String]) -> D
 /// Every process running under any of `roots`, roots included. Callers use this
 /// to resolve true executable names for the few processes that could be agents
 /// instead of the whole table, which costs a syscall each.
-pub fn descendants(table: &[Proc], roots: &[i32]) -> Vec<i32> {
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+pub fn descendants(table: &[Proc], roots: &[Pid]) -> Vec<Pid> {
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for p in table {
         children.entry(p.ppid).or_default().push(p.pid);
     }
     // Membership by set, not by scanning what has been collected so far: the
     // walk covers every process under every app, so a linear check turns each
     // poll into a quadratic sweep of the whole table.
-    let mut seen: HashSet<i32> = HashSet::new();
+    let mut seen: HashSet<Pid> = HashSet::new();
     let mut out = Vec::new();
-    let mut stack: Vec<i32> = roots.to_vec();
+    let mut stack: Vec<Pid> = roots.to_vec();
     while let Some(pid) = stack.pop() {
         if !seen.insert(pid) {
             continue;
@@ -177,8 +179,8 @@ pub fn descendants(table: &[Proc], roots: &[i32]) -> Vec<i32> {
 }
 
 /// Apps with at least one working agent, and how many.
-pub fn by_owner(lit: &[Lit]) -> HashMap<i32, usize> {
-    let mut out: HashMap<i32, usize> = HashMap::new();
+pub fn by_owner(lit: &[Lit]) -> HashMap<Pid, usize> {
+    let mut out: HashMap<Pid, usize> = HashMap::new();
     for l in lit.iter().filter_map(|l| l.owner) {
         *out.entry(l).or_default() += 1;
     }
@@ -191,8 +193,8 @@ mod tests {
 
     fn p(pid: i32, parent: i32, name: &str, ms: u64) -> Proc {
         Proc {
-            pid,
-            ppid: parent,
+            pid: Pid(pid),
+            ppid: Pid(parent),
             name: name.into(),
             cpu: Duration::from_millis(ms),
         }
@@ -210,10 +212,10 @@ mod tests {
     fn an_agent_burning_cpu_is_lit() {
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 400)];
-        let out = lit(&before, &after, &agents(), tick(), &[1]);
+        let out = lit(&before, &after, &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].agent, 2);
-        assert_eq!(out[0].owner, Some(1));
+        assert_eq!(out[0].agent, Pid(2));
+        assert_eq!(out[0].owner, Some(Pid(1)));
     }
 
     #[test]
@@ -221,7 +223,7 @@ mod tests {
         // The measured idle case: a parked agent burns exactly nothing.
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
-        assert!(lit(&before, &after, &agents(), tick(), &[1]).is_empty());
+        assert!(lit(&before, &after, &agents(), tick(), &[Pid(1)]).is_empty());
     }
 
     #[test]
@@ -233,9 +235,9 @@ mod tests {
             p(2, 1, "claude", 100),
             p(3, 2, "rg", 250),
         ];
-        let out = lit(&before, &after, &agents(), tick(), &[1]);
+        let out = lit(&before, &after, &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1, "subtree work must light the agent");
-        assert_eq!(out[0].agent, 2);
+        assert_eq!(out[0].agent, Pid(2));
     }
 
     #[test]
@@ -249,10 +251,10 @@ mod tests {
                 p(3, 2, "cursor-agent", inner),
             ]
         };
-        let out = lit(&table(0), &table(400), &agents(), tick(), &[1]);
+        let out = lit(&table(0), &table(400), &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1, "only the nested worker is doing the work");
-        assert_eq!(out[0].agent, 3);
-        assert_eq!(by_owner(&out).get(&1), Some(&1));
+        assert_eq!(out[0].agent, Pid(3));
+        assert_eq!(by_owner(&out).get(&Pid(1)), Some(&1));
     }
 
     #[test]
@@ -264,9 +266,9 @@ mod tests {
                 p(3, 2, "cursor-agent", 0),
             ]
         };
-        let out = lit(&table(0), &table(400), &agents(), tick(), &[1]);
+        let out = lit(&table(0), &table(400), &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].agent, 2);
+        assert_eq!(out[0].agent, Pid(2));
     }
 
     #[test]
@@ -279,7 +281,7 @@ mod tests {
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
         assert!(
-            lit(&before, &after, &agents(), tick(), &[1]).is_empty(),
+            lit(&before, &after, &agents(), tick(), &[Pid(1)]).is_empty(),
             "a vanished tool leaves no evidence behind"
         );
     }
@@ -288,7 +290,7 @@ mod tests {
     fn a_busy_non_agent_is_ignored() {
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "cargo", 100)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "cargo", 9_000)];
-        assert!(lit(&before, &after, &agents(), tick(), &[1]).is_empty());
+        assert!(lit(&before, &after, &agents(), tick(), &[Pid(1)]).is_empty());
     }
 
     #[test]
@@ -304,11 +306,11 @@ mod tests {
                 p(6, 5, "claude", cpu),
             ]
         };
-        let out = lit(&chain(100), &chain(500), &agents(), tick(), &[1]);
+        let out = lit(&chain(100), &chain(500), &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].owner,
-            Some(1),
+            Some(Pid(1)),
             "must attribute up to the terminal app"
         );
     }
@@ -322,9 +324,9 @@ mod tests {
                 p(3, 1, "cursor-agent", b),
             ]
         };
-        let out = lit(&both(0, 0), &both(300, 300), &agents(), tick(), &[1]);
+        let out = lit(&both(0, 0), &both(300, 300), &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 2);
-        assert_eq!(by_owner(&out).get(&1), Some(&2));
+        assert_eq!(by_owner(&out).get(&Pid(1)), Some(&2));
     }
 
     #[test]
@@ -336,14 +338,17 @@ mod tests {
             p(4, 3, "claude", 0),
             p(9, 0, "Safari", 0),
         ];
-        assert_eq!(descendants(&table, &[1]), vec![1, 2, 3, 4]);
+        assert_eq!(
+            descendants(&table, &[Pid(1)]),
+            vec![Pid(1), Pid(2), Pid(3), Pid(4)]
+        );
     }
 
     #[test]
     fn an_agent_outside_every_known_app_has_no_owner() {
         let before = vec![p(9, 1, "claude", 0)];
         let after = vec![p(9, 1, "claude", 500)];
-        let out = lit(&before, &after, &agents(), tick(), &[7]);
+        let out = lit(&before, &after, &agents(), tick(), &[Pid(7)]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].owner, None);
     }
@@ -357,21 +362,25 @@ mod tests {
         // threshold happened to swallow it.
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 9_000)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 5)];
-        let agents: std::collections::HashSet<i32> = [2].into_iter().collect();
-        let now = [(1, Duration::ZERO), (2, Duration::from_millis(5))]
-            .into_iter()
-            .collect();
-        let was = [(1, Duration::ZERO), (2, Duration::from_millis(9_000))]
-            .into_iter()
-            .collect();
+        let agents: HashSet<Pid> = [Pid(2)].into_iter().collect();
+        let now: HashMap<Pid, Duration> =
+            [(Pid(1), Duration::ZERO), (Pid(2), Duration::from_millis(5))]
+                .into_iter()
+                .collect();
+        let was: HashMap<Pid, Duration> = [
+            (Pid(1), Duration::ZERO),
+            (Pid(2), Duration::from_millis(9_000)),
+        ]
+        .into_iter()
+        .collect();
         let mut children = HashMap::new();
-        children.insert(1, vec![2]);
+        children.insert(Pid(1), vec![Pid(2)]);
         assert_eq!(
-            burned(2, &children, &now, &was, &agents),
+            burned(Pid(2), &children, &now, &was, &agents),
             Duration::ZERO,
             "a shrinking total is a new process, not negative work"
         );
-        assert!(lit(&before, &after, &super::tests::agents(), tick(), &[1]).is_empty());
+        assert!(lit(&before, &after, &super::tests::agents(), tick(), &[Pid(1)]).is_empty());
     }
 
     #[test]
@@ -379,14 +388,14 @@ mod tests {
         // pid reuse can make "now" smaller than "before"; that is not work.
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 9_000)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 5)];
-        assert!(lit(&before, &after, &agents(), tick(), &[1]).is_empty());
+        assert!(lit(&before, &after, &agents(), tick(), &[Pid(1)]).is_empty());
     }
 
     #[test]
     fn a_parent_cycle_terminates() {
         let before = vec![p(2, 3, "claude", 0), p(3, 2, "fish", 0)];
         let after = vec![p(2, 3, "claude", 500), p(3, 2, "fish", 0)];
-        let out = lit(&before, &after, &agents(), tick(), &[1]);
+        let out = lit(&before, &after, &agents(), tick(), &[Pid(1)]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].owner, None);
     }

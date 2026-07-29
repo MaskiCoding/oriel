@@ -31,7 +31,7 @@ fn main() {
     let binaries: Vec<String> = BINARIES.iter().map(|s| (*s).to_string()).collect();
 
     let mut reader = proctable::Reader::new();
-    let mut sample = |roots: &[i32]| {
+    let mut sample = |roots: &[model::Pid]| {
         let mut table = proctable::table();
         let under = model::descendants(&table, roots);
         reader.detail(&mut table, &under);
@@ -39,7 +39,7 @@ fn main() {
     };
 
     let seed = proctable::table();
-    let roots: Vec<i32> = seed
+    let roots: Vec<model::Pid> = seed
         .iter()
         .filter(|p| {
             let n = p.name.to_ascii_lowercase();

@@ -102,7 +102,7 @@ fn space_marks(spaces: &[winsrv::SpaceInfo]) -> HashMap<u64, SpaceMark> {
 
 /// Every app that could own a window. Lantern attributes an agent's work to the
 /// nearest of these above it in the process tree.
-pub fn app_pids() -> Vec<i32> {
+pub fn app_pids() -> Vec<model::Pid> {
     NSWorkspace::sharedWorkspace()
         .runningApplications()
         .iter()
@@ -114,6 +114,7 @@ pub fn app_pids() -> Vec<i32> {
         .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
         .map(|app| app.processIdentifier())
         .filter(|pid| *pid > 0)
+        .map(model::Pid)
         .collect()
 }
 

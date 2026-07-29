@@ -23,3 +23,15 @@ pub use state::WindowState;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct WindowId(pub u32);
+
+/// A process id. Distinct from [`WindowId`] on purpose: both are small integers
+/// that travel together through the same functions, and nothing but the type
+/// stops one being passed where the other belongs.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct Pid(pub i32);
+
+impl std::fmt::Display for Pid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}

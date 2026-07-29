@@ -1145,7 +1145,7 @@ impl App {
                 (
                     i,
                     c,
-                    self.config.lantern.drift && self.lantern.working(c.pid),
+                    self.config.lantern.drift && self.lantern.working(model::Pid(c.pid)),
                 )
             })
             .filter(|(i, _, want)| self.lit.get(*i).copied().unwrap_or(false) != *want)
@@ -1179,7 +1179,7 @@ impl App {
                 tile_of(
                     c,
                     cache.shown(c.wid).cloned(),
-                    drift && lantern.working(c.pid),
+                    drift && lantern.working(model::Pid(c.pid)),
                 )
             })
             .collect();
@@ -1271,7 +1271,7 @@ impl App {
             return;
         };
         let candidate = &live.candidates[index];
-        let lit = self.config.lantern.drift && self.lantern.working(candidate.pid);
+        let lit = self.config.lantern.drift && self.lantern.working(model::Pid(candidate.pid));
         self.strip
             .update_tile(index, &tile_of(candidate, Some(image), lit));
     }
