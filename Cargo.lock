@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ax"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "objc2-core-foundation",
 ]
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -50,7 +50,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "model",
  "serde",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "input"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "muda"
@@ -528,7 +528,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "oriel"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ax",
  "block2",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "proctable"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "model",
 ]
@@ -657,7 +657,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skylight-sys"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "syn"
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "config",
  "objc2",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "winsrv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "objc2-core-foundation",
  "skylight-sys",
