@@ -270,6 +270,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_that_finishes_between_samples_is_missed() {
+        // A known blind spot, pinned so it is a decision rather than a surprise:
+        // work is measured from processes still alive at the second sample, so a
+        // tool that both starts and exits inside one window leaves nothing to
+        // measure. Recording it here means a future change that fixes it will
+        // fail this test loudly instead of silently drifting.
+        let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
+        let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 100)];
+        assert!(
+            lit(&before, &after, &agents(), tick(), &[1]).is_empty(),
+            "a vanished tool leaves no evidence behind"
+        );
+    }
+
+    #[test]
     fn a_busy_non_agent_is_ignored() {
         let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "cargo", 100)];
         let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "cargo", 9_000)];
@@ -331,6 +346,32 @@ mod tests {
         let out = lit(&before, &after, &agents(), tick(), &[7]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].owner, None);
+    }
+
+    #[test]
+    fn a_recycled_pid_does_not_inherit_the_old_process_cpu() {
+        // A pid that is reused starts its CPU count again, so the stored
+        // baseline is larger than the new process's total. Saturating keeps that
+        // from wrapping into an enormous delta; assert the outcome rather than
+        // just that nothing lit, so the test cannot pass merely because the
+        // threshold happened to swallow it.
+        let before = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 9_000)];
+        let after = vec![p(1, 0, "ghostty", 0), p(2, 1, "claude", 5)];
+        let agents: std::collections::HashSet<i32> = [2].into_iter().collect();
+        let now = [(1, Duration::ZERO), (2, Duration::from_millis(5))]
+            .into_iter()
+            .collect();
+        let was = [(1, Duration::ZERO), (2, Duration::from_millis(9_000))]
+            .into_iter()
+            .collect();
+        let mut children = HashMap::new();
+        children.insert(1, vec![2]);
+        assert_eq!(
+            burned(2, &children, &now, &was, &agents),
+            Duration::ZERO,
+            "a shrinking total is a new process, not negative work"
+        );
+        assert!(lit(&before, &after, &super::tests::agents(), tick(), &[1]).is_empty());
     }
 
     #[test]

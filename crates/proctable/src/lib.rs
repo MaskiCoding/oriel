@@ -362,9 +362,16 @@ mod tests {
         detail(&mut snapshot, &[me]);
         let after = snapshot.iter().find(|p| p.pid == me).expect("own pid").cpu;
         let seen = after.saturating_sub(before);
+        // Bounded on both sides. A lower bound alone passed while the reader
+        // was double-counting live threads, which was twice the truth on a 1:1
+        // timebase; an upper bound is what makes that fail.
         assert!(
             seen > burned / 2,
-            "burned {burned:?} of CPU but only {seen:?} was visible"
+            "spun {burned:?} of wall clock but only {seen:?} of CPU was visible"
+        );
+        assert!(
+            seen < burned * 2,
+            "spun {burned:?} of wall clock but {seen:?} of CPU was reported"
         );
     }
 
@@ -379,10 +386,36 @@ mod tests {
 
     #[test]
     fn a_name_comes_back_from_argv_not_the_versioned_executable() {
+        // The case this guards: Claude Code installs itself as a version-numbered
+        // file and reports that same string as its comm, so both the accounting
+        // name and the executable path read "2.1.220" while the command the user
+        // typed survives only in argv[0]. Reproduced by launching a child whose
+        // argv[0] differs from its executable, which is exactly that shape.
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec -a pretend-agent /bin/cat"])
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        let Ok(mut child) = child else {
+            return; // no shell to borrow; nothing to assert
+        };
+        std::thread::sleep(Duration::from_millis(250));
+        let pid = i32::try_from(child.id()).expect("pid fits");
+
         let mut scratch = vec![0u8; arg_max()];
-        let me = std::process::id() as i32;
-        let name = arg0(me, &mut scratch).expect("argv[0] should be readable for own process");
-        assert!(!name.is_empty());
-        assert!(!name.contains('/'), "want a base name, got {name:?}");
+        let argv0 = arg0(pid, &mut scratch);
+        let executable = exec_name(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(
+            argv0.as_deref(),
+            Some("pretend-agent"),
+            "argv[0] is the only place the invoked name survives"
+        );
+        assert_eq!(
+            executable.as_deref(),
+            Some("cat"),
+            "the executable name is the wrong identity for an agent"
+        );
     }
 }
