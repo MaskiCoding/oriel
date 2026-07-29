@@ -49,8 +49,9 @@ pub struct Tile {
     pub title_spans: Vec<(usize, usize)>,
     /// Byte ranges `(start, len)` in `app` to highlight.
     pub app_spans: Vec<(usize, usize)>,
-    /// An agent is working inside this window's app. Drawn as a still mark —
-    /// nothing in the strip animates.
+    /// An agent is working inside this window's app. Drawn as a slow drift of
+    /// colour across the tile — the one thing in the strip that moves, and it
+    /// moves because stillness is what says a window has finished.
     pub lantern: bool,
 }
 
@@ -724,14 +725,12 @@ fn set_highlight(tile: &NSView, on: bool, lit: bool, dark: bool) {
         0.0
     });
 
-    // Every tile keeps an opaque backing, lit or not. The panel behind is
-    // vibrant now, and a preview composited straight onto it comes back dulled
-    // and faintly warm — the strip has to show what a window really looks like.
-    // Vibrancy belongs in the gaps between tiles, the way the Dock shows
-    // through around its icons, never through a tile itself.
+    // Only the selection gets a surface. A preview is already a picture of a
+    // window with its own edges, so a panel behind every tile reads as chrome
+    // the window does not have.
     //
-    // Nothing tints the tile either: the light is the drifting pearl laid over
-    // it, and a coloured backing underneath only turned that back into a stain.
+    // Nothing tints a lit tile either: the light is the drift laid over it, and
+    // a coloured backing underneath only turned that back into a stain.
     // No card behind a tile. A preview is already a picture of a window with
     // its own edges; boxing it in a second panel reads as chrome the window
     // does not have. Only the selection gets a surface, and only enough of one
@@ -862,6 +861,7 @@ const LANTERN_FIELDS: [Field; 4] = [
 /// Long enough to read as ebbing rather than blinking, short enough that the
 /// strip is not still settling by the time it is dismissed.
 const LANTERN_FADE: f64 = 0.55;
+const LANTERN_FADE_NS: i64 = 550_000_000;
 
 /// Animates a view's opacity without waiting on a completion callback.
 fn fade_view(view: &NSView, to: f64, seconds: f64) {
@@ -971,6 +971,23 @@ fn attributed_label(
 }
 
 /// Cancels a pending fade-out `orderOut` when the generation no longer matches.
+/// A lantern overlay waiting for its fade to finish so it can be removed.
+struct LanternDone {
+    glass: Retained<NSView>,
+    generation: Rc<Cell<u32>>,
+    stamp: u32,
+}
+
+unsafe extern "C" fn lantern_fade_finished(ctx: *mut c_void) {
+    // SAFETY: paired with `Box::into_raw` in `Strip::set_lantern`.
+    let done = unsafe { Box::from_raw(ctx.cast::<LanternDone>()) };
+    // A re-summon rebuilds every tile; removing then would touch a view that no
+    // longer belongs to anything.
+    if done.generation.get() == done.stamp {
+        done.glass.removeFromSuperview();
+    }
+}
+
 struct FadeDone {
     panel: Retained<NSPanel>,
     generation: Rc<Cell<u32>>,
@@ -1505,10 +1522,29 @@ impl Strip {
             None => return,
         };
 
-        // Faded to nothing rather than removed: the next summon rebuilds every
-        // tile anyway, so a spent overlay cannot accumulate, and an agent that
-        // starts again picks its own drift back up mid-stride.
         fade_view(&glass, if on { 1.0 } else { 0.0 }, LANTERN_FADE);
+        if !on {
+            // Transparent is not gone. Four gradient layers, each with two
+            // endless animations, would go on being composited behind a fully
+            // faded view for the rest of the session. Drop it once the fade has
+            // played; an agent that starts again is given a fresh one.
+            self.lanterns.borrow_mut().get_mut(index).map(Option::take);
+            let done = Box::new(LanternDone {
+                glass,
+                generation: Rc::clone(&self.fade_generation),
+                stamp: self.fade_generation.get(),
+            });
+            let when = unsafe { dispatch_time(0, LANTERN_FADE_NS) };
+            // SAFETY: paired with `Box::from_raw` in `lantern_fade_finished`.
+            unsafe {
+                dispatch_after_f(
+                    when,
+                    core::ptr::from_ref(&_dispatch_main_q).cast(),
+                    Box::into_raw(done).cast(),
+                    lantern_fade_finished,
+                );
+            }
+        }
         set_highlight(view, index == self.selected.get(), on, self.dark.get());
     }
 
@@ -1544,18 +1580,17 @@ impl Strip {
         let frame = view.frame();
         self.content.addSubview(&view);
         slot.removeFromSuperview();
-        set_highlight(&view, index == self.selected.get(), tile.lantern, dark);
-        if tile.lantern {
-            let glass = self.lantern_glass(view.bounds(), drift_seed(tile));
+        // A preview arriving decides nothing about the lantern. Rebuilding the
+        // overlay here restarted its drift from the beginning and cut past the
+        // fade — and captures land throughout a session, so a working window's
+        // shimmer kept snapping back to the same phase. `set_lantern` owns it;
+        // this only carries what already exists onto the new view.
+        let lit = self.lit.borrow().get(index).copied().unwrap_or(false);
+        set_highlight(&view, index == self.selected.get(), lit, dark);
+        if let Some(glass) = self.lanterns.borrow().get(index).and_then(Clone::clone) {
+            glass.removeFromSuperview();
+            glass.setFrame(view.bounds());
             view.addSubview(&glass);
-            if let Some(slot) = self.lanterns.borrow_mut().get_mut(index) {
-                *slot = Some(glass);
-            }
-        } else if let Some(slot) = self.lanterns.borrow_mut().get_mut(index) {
-            *slot = None;
-        }
-        if let Some(slot) = self.lit.borrow_mut().get_mut(index) {
-            *slot = tile.lantern;
         }
         *slot = view;
         if let Some(cached) = self.mouse.frames.borrow_mut().get_mut(index) {
