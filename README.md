@@ -104,7 +104,7 @@ rejected rather than ignored, so a typo is reported instead of silently doing no
 
 macOS 26 or newer. Accessibility permission is required; Screen Recording is optional — without it Oriel runs in Icons style with previews and window titles disabled, and says so once.
 
-Oriel uses private system APIs to see and focus windows across Spaces, which is why it is not on the App Store. Every private symbol is resolved at runtime and degrades to a reduced capability rather than crashing if a macOS release removes it.
+Oriel uses private system APIs to see and focus windows across Spaces, which is why it is not on the App Store. Every private symbol is resolved at runtime, and none is ever called without having been found. The ones a switcher cannot work without are checked before anything starts: if a macOS release removes one, Oriel names it and declines to run rather than failing later in some harder-to-read way. The rest — suppressing the native switcher, capturing minimized and off-Space windows — degrade to just that capability going quiet.
 
 ## Building
 

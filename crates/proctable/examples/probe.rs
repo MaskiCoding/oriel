@@ -30,10 +30,11 @@ const THRESHOLD: std::time::Duration = std::time::Duration::from_millis(150);
 fn main() {
     let binaries: Vec<String> = BINARIES.iter().map(|s| (*s).to_string()).collect();
 
-    let sample = |roots: &[i32]| {
+    let mut reader = proctable::Reader::new();
+    let mut sample = |roots: &[i32]| {
         let mut table = proctable::table();
         let under = model::descendants(&table, roots);
-        proctable::detail(&mut table, &under);
+        reader.detail(&mut table, &under);
         table
     };
 

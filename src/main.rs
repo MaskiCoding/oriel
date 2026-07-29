@@ -163,10 +163,11 @@ fn lantern_probe() {
     let binaries = config::Lantern::default().binaries;
     let roots = snapshot::app_pids();
 
-    let sample = || {
+    let mut reader = proctable::Reader::new();
+    let mut sample = || {
         let mut table = proctable::table();
         let under = model::descendants(&table, &roots);
-        proctable::detail(&mut table, &under);
+        reader.detail(&mut table, &under);
         table
     };
     // Both samples must be detailed the same way, or the "before" CPU reads as

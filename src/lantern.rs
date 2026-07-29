@@ -35,6 +35,7 @@ pub const WINDOW: Duration = Duration::from_millis(2000);
 pub struct Lantern {
     binaries: Vec<String>,
     prev: Vec<model::Proc>,
+    reader: proctable::Reader,
     lit: HashMap<i32, (usize, Instant)>,
     /// Consecutive samples each app has been over the threshold for.
     streak: HashMap<i32, usize>,
@@ -45,6 +46,7 @@ impl Lantern {
         Self {
             binaries,
             prev: Vec::new(),
+            reader: proctable::Reader::new(),
             lit: HashMap::new(),
             streak: HashMap::new(),
         }
@@ -55,7 +57,7 @@ impl Lantern {
     pub fn poll(&mut self, roots: &[i32]) {
         let mut now = proctable::table();
         let under = model::descendants(&now, roots);
-        proctable::detail(&mut now, &under);
+        self.reader.detail(&mut now, &under);
 
         // The first sample has no predecessor to difference against.
         if !self.prev.is_empty() {

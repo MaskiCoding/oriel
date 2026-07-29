@@ -13,6 +13,7 @@
 #![allow(clippy::cast_sign_loss)] // guarded by the `> 0` checks above each cast
 
 use core::ffi::{c_int, c_void};
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -118,19 +119,60 @@ pub fn table() -> Vec<Proc> {
     out
 }
 
-/// Fills in CPU totals and the best available name for `wanted`.
+/// Reads the process table, remembering what it has already looked up.
 ///
-/// Naming an agent is genuinely awkward. Claude Code installs its executable
-/// under a version-numbered file name and reports that same string as its
-/// `comm`, so both the accounting name and the executable path say `2.1.220`.
-/// The command the user actually typed survives only in `argv[0]`, so that is
-/// tried first, with the executable name and then `comm` behind it.
-pub fn detail(table: &mut [Proc], wanted: &[i32]) {
-    let mut scratch = vec![0u8; arg_max()];
-    for proc in table.iter_mut().filter(|p| wanted.contains(&p.pid)) {
-        proc.cpu = cpu_time(proc.pid);
-        if let Some(name) = arg0(proc.pid, &mut scratch).or_else(|| exec_name(proc.pid)) {
-            proc.name = name;
+/// Naming a process costs a `sysctl` that copies its whole argument area, and
+/// the answer never changes: a process is named once, at exec. Asking again
+/// every two seconds for hundreds of processes was almost the entire cost of a
+/// poll. The scratch buffer the kernel wants is close to a megabyte, so
+/// allocating and zeroing one per sweep was most of the rest.
+#[derive(Default)]
+pub struct Reader {
+    /// pid -> (kernel `comm`, resolved name). `comm` is the guard against pid
+    /// reuse: a recycled pid running something else reports a different one,
+    /// and the name is looked up again.
+    names: HashMap<i32, (String, String)>,
+    scratch: Vec<u8>,
+}
+
+impl Reader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fills in CPU totals and the best available name for `wanted`.
+    ///
+    /// Naming an agent is genuinely awkward. Claude Code installs its executable
+    /// under a version-numbered file and reports that same string as its `comm`,
+    /// so both the accounting name and the executable path say `2.1.220`. The
+    /// command the user actually typed survives only in `argv[0]`, so that is
+    /// tried first, with the executable name behind it.
+    pub fn detail(&mut self, table: &mut [Proc], wanted: &[i32]) {
+        if self.scratch.is_empty() {
+            self.scratch = vec![0u8; arg_max()];
+        }
+        for proc in table.iter_mut().filter(|p| wanted.contains(&p.pid)) {
+            proc.cpu = cpu_time(proc.pid);
+            match self.names.get(&proc.pid) {
+                Some((comm, resolved)) if *comm == proc.name => {
+                    proc.name.clone_from(resolved);
+                }
+                _ => {
+                    let comm = proc.name.clone();
+                    if let Some(name) =
+                        arg0(proc.pid, &mut self.scratch).or_else(|| exec_name(proc.pid))
+                    {
+                        proc.name = name;
+                    }
+                    self.names.insert(proc.pid, (comm, proc.name.clone()));
+                }
+            }
+        }
+        // Processes end; their names must not outlive them or the map is a leak
+        // that grows for as long as Oriel runs.
+        if self.names.len() > table.len().saturating_mul(2) {
+            let alive: HashSet<i32> = table.iter().map(|p| p.pid).collect();
+            self.names.retain(|pid, _| alive.contains(pid));
         }
     }
 }
@@ -342,6 +384,50 @@ mod tests {
     }
 
     #[test]
+    fn a_name_is_looked_up_once_and_then_remembered() {
+        // The cache is what makes a poll cheap; if a repeat sweep still paid for
+        // the argv syscall the optimisation would be silently gone.
+        let me = i32::try_from(std::process::id()).expect("pid fits");
+        let mut reader = Reader::new();
+
+        let mut first = table();
+        reader.detail(&mut first, &[me]);
+        let named = first.iter().find(|p| p.pid == me).expect("own pid");
+        let expected = named.name.clone();
+
+        let mut second = table();
+        reader.detail(&mut second, &[me]);
+        let again = second.iter().find(|p| p.pid == me).expect("own pid");
+        assert_eq!(
+            again.name, expected,
+            "a remembered name must match the looked-up one"
+        );
+    }
+
+    #[test]
+    fn a_recycled_pid_is_named_again_rather_than_remembered_wrong() {
+        // The guard is the kernel's `comm`: a pid running something else reports
+        // a different one, so the stale entry cannot be handed back.
+        let me = i32::try_from(std::process::id()).expect("pid fits");
+        let mut reader = Reader::new();
+        let mut table = table();
+        reader.detail(&mut table, &[me]);
+
+        // Same pid, but presenting as a different program.
+        let mut recycled = vec![Proc {
+            pid: me,
+            ppid: 1,
+            name: "something-else-entirely".into(),
+            cpu: Duration::ZERO,
+        }];
+        reader.detail(&mut recycled, &[me]);
+        assert_ne!(
+            recycled[0].name, "something-else-entirely",
+            "a changed comm must trigger a fresh lookup, not a cache hit"
+        );
+    }
+
+    #[test]
     fn a_busy_process_reads_as_busy() {
         // The task totals are mach ticks, not nanoseconds; read raw they were
         // about two percent of the truth on this timebase. Burn a known amount
@@ -349,7 +435,7 @@ mod tests {
         // than a fixed number, so it holds on any timebase.
         let me = i32::try_from(std::process::id()).expect("pid fits");
         let mut snapshot = table();
-        detail(&mut snapshot, &[me]);
+        Reader::new().detail(&mut snapshot, &[me]);
         let before = snapshot.iter().find(|p| p.pid == me).expect("own pid").cpu;
 
         let spin = std::time::Instant::now();
@@ -359,7 +445,7 @@ mod tests {
         let burned = spin.elapsed();
 
         let mut snapshot = table();
-        detail(&mut snapshot, &[me]);
+        Reader::new().detail(&mut snapshot, &[me]);
         let after = snapshot.iter().find(|p| p.pid == me).expect("own pid").cpu;
         let seen = after.saturating_sub(before);
         // Bounded on both sides. A lower bound alone passed while the reader
@@ -379,7 +465,7 @@ mod tests {
     fn detail_fills_cpu_for_this_process() {
         let mut table = table();
         let me = std::process::id() as i32;
-        detail(&mut table, &[me]);
+        Reader::new().detail(&mut table, &[me]);
         let found = table.iter().find(|p| p.pid == me).expect("own pid missing");
         assert!(found.cpu > Duration::ZERO, "this test has burned CPU");
     }
