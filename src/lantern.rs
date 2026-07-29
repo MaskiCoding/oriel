@@ -85,6 +85,19 @@ impl Lantern {
         self.prev = now;
     }
 
+    /// Forgets everything measured so far.
+    ///
+    /// A sample is only meaningful against the one before it. After a gap — a
+    /// pause, a config reload — the next delta would span the whole gap and
+    /// clear any threshold on work that happened minutes ago, with the streak
+    /// still counting from before, so the confirmation that exists to reject
+    /// spikes would wave it straight through.
+    pub fn reset(&mut self) {
+        self.prev.clear();
+        self.streak.clear();
+        self.lit.clear();
+    }
+
     /// Whether this app has an agent working inside it.
     pub fn working(&self, app: i32) -> bool {
         self.lit.contains_key(&app)
@@ -124,6 +137,85 @@ mod tests {
 
     fn own_pid() -> i32 {
         i32::try_from(std::process::id()).expect("pids fit in i32 on macOS")
+    }
+
+    /// A table where `agent` sits under `app` and has burned `cpu`.
+    fn forest(app: i32, agent: i32, cpu: Duration) -> Vec<model::Proc> {
+        vec![
+            model::Proc {
+                pid: app,
+                ppid: 0,
+                name: "Terminal".into(),
+                cpu: Duration::ZERO,
+            },
+            model::Proc {
+                pid: agent,
+                ppid: app,
+                name: "claude".into(),
+                cpu,
+            },
+        ]
+    }
+
+    /// Drives the detector's decision without touching the process table.
+    fn decide(samples: &[Duration]) -> Vec<bool> {
+        let mut lantern = Lantern::new(vec!["claude".into()]);
+        let mut out = Vec::new();
+        for cpu in samples {
+            let now = forest(1, 2, *cpu);
+            if !lantern.prev.is_empty() {
+                let lit = model::lit(&lantern.prev, &now, &lantern.binaries, THRESHOLD, &[1]);
+                let over = model::by_owner(&lit);
+                let at = Instant::now();
+                lantern.streak.retain(|app, _| over.contains_key(app));
+                for (app, count) in over {
+                    let streak = lantern.streak.entry(app).or_default();
+                    *streak += 1;
+                    if *streak >= CONFIRM {
+                        lantern.lit.insert(app, (count, at));
+                    }
+                }
+                lantern.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
+            }
+            lantern.prev = now;
+            out.push(lantern.working(1));
+        }
+        out
+    }
+
+    #[test]
+    fn one_sample_over_the_threshold_is_not_enough() {
+        // An idle agent spikes to 360 ms as it wakes to redraw; sustained work
+        // is what the mark is for, so a lone spike must not light it.
+        let cpu = [
+            Duration::ZERO,
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+        ];
+        assert_eq!(decide(&cpu), vec![false, false, false]);
+    }
+
+    #[test]
+    fn two_consecutive_samples_over_the_threshold_light_it() {
+        let cpu = [
+            Duration::ZERO,
+            Duration::from_millis(500),
+            Duration::from_millis(1000),
+            Duration::from_millis(1500),
+        ];
+        assert_eq!(decide(&cpu), vec![false, false, true, true]);
+    }
+
+    #[test]
+    fn a_reset_makes_the_next_sample_meaningless_on_purpose() {
+        let mut lantern = Lantern::new(vec!["claude".into()]);
+        lantern.prev = forest(1, 2, Duration::from_secs(9));
+        lantern.streak.insert(1, 5);
+        lantern.lit.insert(1, (1, Instant::now()));
+        lantern.reset();
+        assert!(lantern.prev.is_empty());
+        assert!(!lantern.working(1));
+        assert_eq!(lantern.count(), 0);
     }
 
     #[test]

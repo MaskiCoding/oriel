@@ -51,6 +51,9 @@ fn schedule_lantern() {
         let (count, live) = {
             let mut app = app.borrow_mut();
             if app.paused {
+                // Not merely skipped: the samples either side of a pause are not
+                // a measurement of anything.
+                app.lantern.reset();
                 (0, false)
             } else {
                 let roots = crate::snapshot::app_pids();
@@ -854,8 +857,12 @@ impl App {
 
     fn act_close(&mut self) {
         if let Some((pid, wid)) = self.selected_target() {
-            let _ = ax::close_window(pid, wid);
-            self.forget(|c| c.wid != wid);
+            // Only drop the row if the app accepted the close. A refusal — an
+            // unsaved-changes sheet, a window that ignores the action — left the
+            // strip claiming a window had gone while it sat there on screen.
+            if ax::close_window(pid, wid) {
+                self.forget(|c| c.wid != wid);
+            }
         }
         self.settle();
     }
@@ -918,7 +925,10 @@ impl App {
             return;
         }
         if live.candidates.is_empty() {
-            self.cancel();
+            // Do not cancel here. The rows were dropped on the user's say-so,
+            // before the system agreed; cancelling would end the session and
+            // take `settle` with it, so a refused quit could never be undone.
+            // An empty strip for a moment is recoverable, a closed one is not.
             return;
         }
         let selected = live.selection.selected().min(live.candidates.len() - 1);

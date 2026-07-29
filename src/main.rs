@@ -149,8 +149,13 @@ fn write_png(image: &objc2_core_graphics::CGImage, path: &str) -> bool {
 
 /// Dumps every switchable window's raw tags/attributes and Space — the way the
 /// state-marker bits were established (minimize a window, diff the output).
-/// Reports what Lantern sees, through the exact path the app uses, so a window
-/// that is not lighting up can be told apart from an agent that is not working.
+/// Reports what Lantern measures for each agent, so a window that is not
+/// lighting up can be told apart from an agent that is not working.
+///
+/// This is one sample. The app additionally requires two consecutive samples
+/// over the threshold before it lights anything, so a single WORKING line here
+/// is the raw reading, not the app's verdict — which is the point: it shows the
+/// number the decision is made from.
 #[cfg(debug_assertions)]
 fn lantern_probe() {
     let binaries: Vec<String> = lantern::DEFAULT_BINARIES
@@ -174,6 +179,7 @@ fn lantern_probe() {
     println!("apps with windows : {}", roots.len());
     println!("window            : {:?}", lantern::WINDOW);
     println!("threshold         : {:?}", lantern::THRESHOLD);
+    println!("(the app needs two consecutive samples over it before lighting)");
     for proc in after.iter().filter(|p| binaries.contains(&p.name)) {
         let burn = model::burn(&before, &after, proc.pid, &binaries);
         let share = burn.as_secs_f64() / lantern::WINDOW.as_secs_f64() * 100.0;
@@ -183,7 +189,7 @@ fn lantern_probe() {
             proc.name,
             burn.as_secs_f64() * 1000.0,
             if burn > lantern::THRESHOLD {
-                "WORKING"
+                "over threshold"
             } else {
                 "idle"
             }
