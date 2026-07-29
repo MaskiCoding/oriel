@@ -90,7 +90,8 @@ Match tiers, best first: exact > prefix > word-boundary prefix (incl. camelCase)
 - **Multi-screen**: show strip on active screen (default) / screen with pointer / screen with menu bar.
 - **Peek**: off by default; when on, selection shows a full-size preview.
 - Titles show window title / app name / both; truncate start/middle/end. State markers and Space badges can be hidden.
-- Animations minimal: apparition delay slider (0–900 ms, default 0), optional fade-out. Nothing else moves. Nothing ever animates *in*.
+- Animations minimal: apparition delay slider (0–900 ms, default 0), optional fade-out. Nothing ever animates *in*.
+- One exception, and only one: a window with an agent working inside it carries a slow drift of colour (the Lantern). It earns the exception because stillness is precisely what the rest of the strip uses to say a window is finished — a static mark could not carry "still going" without being read as another state badge. It fades in and out rather than switching, and nothing else in the strip moves.
 
 ### 4.7 App rules
 

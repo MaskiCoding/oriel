@@ -769,8 +769,9 @@ fn mouse_location() -> NSPoint {
     unsafe { msg_send![class!(NSEvent), mouseLocation] }
 }
 
-/// `ORIEL_MATERIAL=none` drops vibrancy back to a flat fill, so a rendering
-/// problem can be tested with the blur out of the picture.
+/// `ORIEL_MATERIAL=none` takes the behind-window blur out of the picture
+/// entirely — flat fill, no sampling of what is behind — so a rendering problem
+/// can be tested against a panel that asks nothing of the compositor.
 fn vibrancy_off() -> bool {
     std::env::var("ORIEL_MATERIAL").is_ok_and(|v| v == "none")
 }
@@ -1256,8 +1257,17 @@ impl Strip {
         // lives inside it, with the rounded corners moved onto the glass.
         let glass = NSVisualEffectView::new(mtm);
         glass.setMaterial(material_for(true));
-        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        glass.setState(NSVisualEffectState::Active);
+        // `BehindWindow` is what makes the WindowServer sample and blur whatever
+        // the panel is floating over. Turning vibrancy off has to stop that
+        // work, not just cover it up, or the switch cannot tell us whether the
+        // compositing is what makes other windows flicker on summon.
+        if vibrancy_off() {
+            glass.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+            glass.setState(NSVisualEffectState::Inactive);
+        } else {
+            glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            glass.setState(NSVisualEffectState::Active);
+        }
         glass.setWantsLayer(true);
         if let Some(layer) = glass.layer() {
             layer.setCornerRadius(18.0);
