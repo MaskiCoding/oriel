@@ -161,7 +161,8 @@ fn lantern_probe() {
     // The shipped default rather than a second list: a diagnostic that watches
     // for different commands than the app is not a diagnostic.
     let binaries = config::Lantern::default().binaries;
-    let roots = snapshot::app_pids();
+    let mut apps = snapshot::AppPids::new();
+    let roots = apps.current().to_vec();
 
     let mut reader = proctable::Reader::new();
     let mut sample = || {

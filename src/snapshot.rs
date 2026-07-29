@@ -2,6 +2,7 @@
 //! records plus the pid/aspect/badge metadata the UI layer still needs.
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSScreen, NSWorkspace};
@@ -100,22 +101,62 @@ fn space_marks(spaces: &[winsrv::SpaceInfo]) -> HashMap<u64, SpaceMark> {
     marks
 }
 
-/// Every app that could own a window. Lantern attributes an agent's work to the
-/// nearest of these above it in the process tree.
-pub fn app_pids() -> Vec<model::Pid> {
-    NSWorkspace::sharedWorkspace()
-        .runningApplications()
-        .iter()
-        // Only apps that can own a window. Attribution takes the *nearest*
-        // ancestor, and helper processes — Electron's renderers, an editor's
-        // language servers — sit between the shell and the bundle that actually
-        // owns the tile. Counting them means work is keyed to a pid no window
-        // has, so the menu-bar count rises while every tile stays dark.
-        .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
-        .map(|app| app.processIdentifier())
-        .filter(|pid| *pid > 0)
-        .map(model::Pid)
-        .collect()
+/// The apps that could own a window, refreshed only now and then.
+///
+/// Every property on `NSRunningApplication` — even `processIdentifier` — can
+/// fault in the app's dynamic properties, which round-trips to `LaunchServices`
+/// once per application. Doing that for every running app every two seconds was
+/// the single most expensive thing Oriel did while idle, dwarfing the process
+/// table it was there to interpret.
+///
+/// Caching per pid did not help, because obtaining the pid was itself the
+/// expensive call. So the whole answer is cached instead: applications launch
+/// and quit on a human timescale, and an agent that starts inside an app which
+/// appeared in the last few seconds is simply attributed on the next sweep.
+pub struct AppPids {
+    cached: Vec<model::Pid>,
+    taken: Option<Instant>,
+}
+
+/// Long enough that the cost disappears into the noise, short enough that an
+/// app launched while you were reading this is already accounted for.
+const APPS_TTL: Duration = Duration::from_secs(30);
+
+impl Default for AppPids {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppPids {
+    pub fn new() -> Self {
+        Self {
+            cached: Vec::new(),
+            taken: None,
+        }
+    }
+
+    pub fn current(&mut self) -> &[model::Pid] {
+        if self.taken.is_some_and(|at| at.elapsed() < APPS_TTL) {
+            return &self.cached;
+        }
+        self.cached = NSWorkspace::sharedWorkspace()
+            .runningApplications()
+            .iter()
+            .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+            .map(|app| app.processIdentifier())
+            .filter(|pid| *pid > 0)
+            .map(model::Pid)
+            .collect();
+        self.taken = Some(Instant::now());
+        &self.cached
+    }
+
+    /// Forces the next read to ask the system again — for the moment a window
+    /// appears from an app that was not there before.
+    pub fn invalidate(&mut self) {
+        self.taken = None;
+    }
 }
 
 fn windowless_apps(owned: &HashSet<i32>) -> Vec<(i32, String)> {

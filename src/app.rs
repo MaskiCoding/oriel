@@ -56,8 +56,7 @@ fn schedule_lantern() {
                 app.lantern.reset();
                 (0, false)
             } else {
-                let roots = crate::snapshot::app_pids();
-                app.lantern.poll(&roots);
+                app.lantern.poll();
                 (app.lantern.count(), app.session.is_some())
             }
         };
@@ -419,6 +418,8 @@ impl App {
         if self.paused {
             return;
         }
+        // An app launched since the last summon should be attributable now.
+        self.lantern.refresh_apps();
         #[cfg(debug_assertions)]
         {
             self.triggered_at = Some(std::time::Instant::now());

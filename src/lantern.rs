@@ -36,6 +36,7 @@ pub struct Lantern {
     binaries: Vec<String>,
     prev: Vec<model::Proc>,
     reader: proctable::Reader,
+    apps: crate::snapshot::AppPids,
     lit: HashMap<model::Pid, (usize, Instant)>,
     /// Consecutive samples each app has been over the threshold for.
     streak: HashMap<model::Pid, usize>,
@@ -47,6 +48,7 @@ impl Lantern {
             binaries,
             prev: Vec::new(),
             reader: proctable::Reader::new(),
+            apps: crate::snapshot::AppPids::new(),
             lit: HashMap::new(),
             streak: HashMap::new(),
         }
@@ -54,7 +56,9 @@ impl Lantern {
 
     /// Samples the process table and refreshes the lit set. `roots` are the pids
     /// of apps with windows; work is attributed to the nearest one above it.
-    pub fn poll(&mut self, roots: &[model::Pid]) {
+    pub fn poll(&mut self) {
+        let roots = self.apps.current().to_vec();
+        let roots = roots.as_slice();
         let mut now = proctable::table();
         let under = model::descendants(&now, roots);
         self.reader.detail(&mut now, &under);
@@ -75,6 +79,15 @@ impl Lantern {
             self.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
         }
         self.prev = now;
+    }
+
+    /// Re-reads which apps are running on the next poll.
+    ///
+    /// The list is cached because asking is expensive; a summon is the moment
+    /// staleness would actually show, so it is refreshed then rather than on a
+    /// timer that has no relationship to what the user is looking at.
+    pub fn refresh_apps(&mut self) {
+        self.apps.invalidate();
     }
 
     /// Forgets everything measured so far.
@@ -220,17 +233,16 @@ mod tests {
     fn the_first_poll_cannot_claim_work() {
         // With one sample there is no delta, so nothing may be reported.
         let mut lantern = Lantern::new(vec!["claude".into()]);
-        lantern.poll(&[own_pid()]);
+        lantern.poll();
         assert_eq!(lantern.count(), 0);
     }
 
     #[test]
     fn polling_twice_is_harmless_and_stays_bounded() {
         let mut lantern = Lantern::new(vec!["definitely-not-a-real-agent".into()]);
-        let roots = [own_pid()];
-        lantern.poll(&roots);
-        lantern.poll(&roots);
+        lantern.poll();
+        lantern.poll();
         assert_eq!(lantern.count(), 0);
-        assert!(!lantern.working(roots[0]));
+        assert!(!lantern.working(own_pid()));
     }
 }
