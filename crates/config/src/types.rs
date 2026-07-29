@@ -126,6 +126,36 @@ pub struct Peek {
     pub enabled: bool,
 }
 
+/// The working-agent indicator. `binaries` is matched against the command as
+/// invoked, so it is the name typed at the shell, not the executable on disk —
+/// agents that install themselves under a version-numbered file report that
+/// version everywhere except `argv[0]`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Lantern {
+    pub enabled: bool,
+    pub binaries: Vec<String>,
+}
+
+impl Default for Lantern {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            binaries: [
+                "claude",
+                "cursor-agent",
+                "codex",
+                "aider",
+                "gemini",
+                "opencode",
+            ]
+            .iter()
+            .map(|b| (*b).to_string())
+            .collect(),
+        }
+    }
+}
+
 /// PRD §4.6: nothing ever animates in; dismissal may optionally fade.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -414,6 +444,7 @@ pub(crate) struct RawConfig {
     pub start_at_login: bool,
     pub menubar_icon: bool,
     pub peek: Peek,
+    pub lantern: Lantern,
     pub animation: Animation,
     pub titles: Titles,
     pub controls: Controls,
@@ -434,6 +465,7 @@ impl Default for RawConfig {
             start_at_login: true,
             menubar_icon: true,
             peek: Peek::default(),
+            lantern: Lantern::default(),
             animation: Animation::default(),
             titles: Titles::default(),
             controls: Controls::default(),

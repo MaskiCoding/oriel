@@ -12,15 +12,17 @@ An oriel is a bay window that projects outward so you can see in every direction
 - **Muscle-memory triggers.** `⌘⇥` for everything, `⌥⇥` scoped to the active app. Hold, cycle with the trigger key (`⇧` reverses), release to jump; `⏎` focuses, `⎋` cancels. A quick flick switches to the previous window without the strip ever appearing.
 - **Lenses.** A lens is a trigger plus a scope plus a look. Each one picks its own windows (all apps / active only / everything else; all Spaces / visible / hidden; all screens / the strip's screen), decides what to do with minimized, hidden, fullscreen, and windowless entries (show, show at the end, or hide), and chooses its ordering, grouping, style, and size. Hitting another lens's trigger mid-session morphs the strip in place.
 - **Live previews.** Tiles are real window screenshots, including minimized and off-Space windows. The strip always paints from cache first, so summoning never waits on a capture.
+- **Real glass.** The strip is a vibrant panel that picks up what it floats over, the way the Dock does, with previews on an opaque surface so a window's colours stay true.
 - **Three presentations.** Gallery (preview tiles, the default), Icons (a compact icon grid), List (dense rows). Tile size is fixed or automatic — with many windows the strip densifies rather than scrolling. It never scrolls.
 - **Filter.** Type to narrow: exact, prefix, word-boundary, substring, acronym, then small-edit fuzzy, diacritic-insensitive, app name weighted above window title, with matched characters highlighted. Matches sort above non-matches instead of vanishing, so the layout does not jump while you type.
 - **In-session actions.** `W` closes a window, `M` minimizes or restores, `F` toggles fullscreen, `Q` quits the app, `H` hides it. Arrows move the selection in two dimensions across the strip's real rows and wrap at the edges; vim keys optional. All rebindable.
 - **Mouse, without stealing focus.** Click a tile to jump, scroll to move the selection, and optionally hover to select. The strip is a non-activating panel throughout — pointing at it never deactivates the app underneath.
 - **Peek.** Off by default: when on, the selected window is also shown at full size behind the strip, so you can read it before committing.
+- **The Lantern.** A window with a coding agent working inside it carries a slow drift of colour, and the menu bar counts how many are busy. It reads CPU rather than window titles — a title says what a tool wants you to think, and a covered window stops redrawing, so a stale claim can outlive the work by minutes. Detection is by command name (`claude`, `cursor-agent`, `codex`, `aider`, `gemini`, `opencode` by default) and needs no extra permission. Two honest limits: work that starts *and* finishes between samples leaves nothing to measure, and a terminal running several panes is one window, so the mark says "something in here is working", never which pane.
 - **Captions your way.** Show the window title, the app name, or both; truncate at the start, middle, or end; hide the state markers and Space badges entirely.
 - **App rules.** Keyed by bundle-ID prefix: hide an app's windows (always, when it has no window, or by title), or pass the trigger straight through to the app — which is what makes VMs and remote-desktop clients usable.
 - **Well-mannered.** Suppresses the native `⌘⇥` switcher while running and restores it on every exit path, including `kill -9`. Menu-bar resident with no Dock icon — it becomes a regular app only while the settings window is open, so that window reaches the Dock and `⌘⇥` like any other. One process. **Zero network calls, no telemetry, no accounts, no auto-updater.**
-- **Nothing animates in.** The strip appears instantly. Dismissal can fade if you ask for it; nothing else moves.
+- **Nothing animates in.** The strip appears instantly. Dismissal can fade if you ask for it. The Lantern's drift is the single exception, and it earns it: stillness is what the rest of the strip uses to say a window has finished, so a static mark could not carry "still going" without reading as another state badge.
 
 ## Configuration
 
@@ -39,8 +41,12 @@ menubar_icon = true
 [peek]
 enabled = false
 
+[lantern]
+enabled = true                 # drift a window that has an agent working in it
+binaries = ["claude", "cursor-agent", "codex", "aider", "gemini", "opencode"]
+
 [animation]
-fade_out = false               # dismissal only; nothing ever animates in
+fade_out = false               # dismissal only; the Lantern's drift is the one exception
 
 [titles]
 show = "title"                 # title | app | both
@@ -121,6 +127,7 @@ A Cargo workspace, one concern per crate, with the unsafe FFI quarantined at the
 | `model` | Pure state: windows, MRU, and the filter/order/group/match resolvers. No FFI, no AppKit, fully unit-tested. |
 | `winsrv` | WindowServer enumeration, batched state queries, Space topology, the focus sequence. |
 | `capture` | Window screenshots, thumbnailing, and a byte-budgeted preview cache. |
+| `proctable` | The process table via `libproc`: parents, invoked names, and CPU. Zero logic. |
 | `input` | Triggers, native-switcher suppression, event taps, keymap parsing. |
 | `ui` | The strip, Peek, and the settings window as native AppKit via `objc2`. |
 | `config` | TOML schema, defaults, and serialisation back to disk. |

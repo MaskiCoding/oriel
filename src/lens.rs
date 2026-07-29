@@ -13,6 +13,10 @@ menubar_icon = true
 [peek]
 enabled = false
 
+[lantern]
+enabled = true                 # drift a window that has an agent working in it
+binaries = ["claude", "cursor-agent", "codex", "aider", "gemini", "opencode"]
+
 [animation]
 fade_out = false
 

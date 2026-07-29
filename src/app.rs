@@ -50,7 +50,7 @@ fn schedule_lantern() {
         // touching the status item: rebuilding that re-enters this borrow.
         let (count, live) = {
             let mut app = app.borrow_mut();
-            if app.paused {
+            if app.paused || !app.config.lantern.enabled {
                 // Not merely skipped: the samples either side of a pause are not
                 // a measurement of anything.
                 app.lantern.reset();
@@ -1459,6 +1459,15 @@ impl App {
             return;
         }
 
+        // Editing the agent list has to reach the detector, and the samples
+        // taken under the old list are not a measurement of anything under the
+        // new one.
+        if cfg.lantern.binaries != self.config.lantern.binaries {
+            self.lantern = crate::lantern::Lantern::new(cfg.lantern.binaries.clone());
+        } else if !cfg.lantern.enabled {
+            self.lantern.reset();
+        }
+
         let login_changed = cfg.start_at_login != self.config.start_at_login;
         let menubar_wanted = cfg.menubar_icon;
         let menubar_changed = menubar_wanted != self.config.menubar_icon;
@@ -1677,12 +1686,7 @@ pub fn run(mtm: MainThreadMarker, cfg: &config::Config) {
         paused: false,
         menubar: None,
         lit: Vec::new(),
-        lantern: crate::lantern::Lantern::new(
-            crate::lantern::DEFAULT_BINARIES
-                .iter()
-                .map(|b| (*b).to_string())
-                .collect(),
-        ),
+        lantern: crate::lantern::Lantern::new(cfg.lantern.binaries.clone()),
         settings: None,
         pending_config: None,
     }));
