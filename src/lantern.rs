@@ -100,6 +100,28 @@ impl Lantern {
 mod tests {
     use super::*;
 
+    /// The probe example restates these so it can run without the binary crate.
+    /// If they drift it becomes a different detector wearing the same name,
+    /// which is exactly what it is meant to check.
+    #[test]
+    fn the_probe_example_agrees_with_the_shipping_constants() {
+        let example = include_str!("../crates/proctable/examples/probe.rs");
+        for binary in DEFAULT_BINARIES {
+            assert!(
+                example.contains(&format!("\"{binary}\"")),
+                "probe is missing agent binary {binary}"
+            );
+        }
+        assert!(
+            example.contains("from_millis(150)"),
+            "probe threshold drifted from THRESHOLD"
+        );
+        assert!(
+            example.contains("from_millis(2000)"),
+            "probe window drifted from WINDOW"
+        );
+    }
+
     fn own_pid() -> i32 {
         i32::try_from(std::process::id()).expect("pids fit in i32 on macOS")
     }

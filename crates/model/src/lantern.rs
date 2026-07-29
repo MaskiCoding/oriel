@@ -6,11 +6,16 @@
 //! be minutes stale. CPU time cannot lie the same way: a waiting agent burns
 //! none, a working one burns some, and neither depends on being on screen.
 //!
-//! Work counts across the agent's whole subtree, because an agent running a
-//! tool sits idle while the tool burns — that is the exact case the title
-//! spinner got wrong.
+//! Work counts across the tools an agent has spawned, because an agent running
+//! a tool sits idle while the tool burns — the exact case the title spinner got
+//! wrong. The walk stops at any nested agent, so an orchestrator does not claim
+//! its worker's effort.
+//!
+//! Two things this cannot see. A tool that starts and finishes between samples
+//! leaves no process behind to measure, so very short work goes unnoticed. And
+//! attribution reaches the app a window belongs to, never the pane inside it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// One process as the kernel reports it.
@@ -54,7 +59,7 @@ pub fn lit(
     }
     let now: HashMap<i32, Duration> = after.iter().map(|p| (p.pid, p.cpu)).collect();
 
-    let is_agent: Vec<i32> = after
+    let is_agent: HashSet<i32> = after
         .iter()
         .filter(|p| binaries.iter().any(|b| b == &p.name))
         .map(|p| p.pid)
@@ -85,16 +90,18 @@ fn burned(
     children: &HashMap<i32, Vec<i32>>,
     now: &HashMap<i32, Duration>,
     was: &HashMap<i32, Duration>,
-    agents: &[i32],
+    agents: &HashSet<i32>,
 ) -> Duration {
     let mut total = Duration::ZERO;
     let mut stack = vec![pid];
-    let mut seen = 0usize;
+    // A ppid chain can in principle cycle. Counting steps bounds the walk but
+    // still lets the same process be summed repeatedly on the way round, which
+    // inflates the total; remembering what has been counted is what makes the
+    // sum right rather than merely finite.
+    let mut seen: HashSet<i32> = HashSet::new();
     while let Some(p) = stack.pop() {
-        // A corrupt ppid chain could cycle; the table is the only bound we need.
-        seen += 1;
-        if seen > now.len() {
-            break;
+        if !seen.insert(p) {
+            continue;
         }
         let cur = now.get(&p).copied().unwrap_or_default();
         total += cur.saturating_sub(was.get(&p).copied().unwrap_or_default());
@@ -134,7 +141,7 @@ pub fn burn(before: &[Proc], after: &[Proc], pid: i32, binaries: &[String]) -> D
     for p in after {
         children.entry(p.ppid).or_default().push(p.pid);
     }
-    let agents: Vec<i32> = after
+    let agents: HashSet<i32> = after
         .iter()
         .filter(|p| binaries.iter().any(|b| b == &p.name))
         .map(|p| p.pid)
@@ -150,10 +157,14 @@ pub fn descendants(table: &[Proc], roots: &[i32]) -> Vec<i32> {
     for p in table {
         children.entry(p.ppid).or_default().push(p.pid);
     }
+    // Membership by set, not by scanning what has been collected so far: the
+    // walk covers every process under every app, so a linear check turns each
+    // poll into a quadratic sweep of the whole table.
+    let mut seen: HashSet<i32> = HashSet::new();
     let mut out = Vec::new();
     let mut stack: Vec<i32> = roots.to_vec();
     while let Some(pid) = stack.pop() {
-        if out.contains(&pid) || out.len() > table.len() {
+        if !seen.insert(pid) {
             continue;
         }
         out.push(pid);

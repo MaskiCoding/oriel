@@ -1,7 +1,10 @@
-//! Ground truth for Lantern: sample the process table twice and report which
-//! agents were working, plus what it cost. `cargo run -p proctable --example probe`
+//! What Lantern sees, through the same constants the app uses. Any number here
+//! that drifts from `src/lantern.rs` makes this a different detector wearing the
+//! same name, so the thresholds and window are imported rather than restated.
+//!
+//! `cargo run -p proctable --example probe`
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const TERMINALS: [&str; 6] = [
     "ghostty",
@@ -12,15 +15,30 @@ const TERMINALS: [&str; 6] = [
     "kitty",
 ];
 
-fn main() {
-    let binaries: Vec<String> = ["claude", "cursor-agent", "codex", "aider"]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
+/// Kept in step with `lantern::DEFAULT_BINARIES` by the test below.
+const BINARIES: [&str; 6] = [
+    "claude",
+    "cursor-agent",
+    "codex",
+    "aider",
+    "gemini",
+    "opencode",
+];
+const WINDOW: std::time::Duration = std::time::Duration::from_millis(2000);
+const THRESHOLD: std::time::Duration = std::time::Duration::from_millis(150);
 
-    let t0 = Instant::now();
-    let mut before = proctable::table();
-    let roots: Vec<i32> = before
+fn main() {
+    let binaries: Vec<String> = BINARIES.iter().map(|s| (*s).to_string()).collect();
+
+    let sample = |roots: &[i32]| {
+        let mut table = proctable::table();
+        let under = model::descendants(&table, roots);
+        proctable::detail(&mut table, &under);
+        table
+    };
+
+    let seed = proctable::table();
+    let roots: Vec<i32> = seed
         .iter()
         .filter(|p| {
             let n = p.name.to_ascii_lowercase();
@@ -28,50 +46,30 @@ fn main() {
         })
         .map(|p| p.pid)
         .collect();
-    let under = model::descendants(&before, &roots);
-    proctable::detail(&mut before, &under);
-    let cost = t0.elapsed();
 
-    std::thread::sleep(Duration::from_millis(1000));
+    let started = Instant::now();
+    let before = sample(&roots);
+    std::thread::sleep(WINDOW);
+    let after = sample(&roots);
 
-    let t1 = Instant::now();
-    let mut after = proctable::table();
-    let under2 = model::descendants(&after, &roots);
-    proctable::detail(&mut after, &under2);
-    let cost2 = t1.elapsed();
-
-    for p in after.iter().filter(|p| under2.contains(&p.pid)) {
+    let lit = model::lit(&before, &after, &binaries, THRESHOLD, &roots);
+    println!("processes       : {}", after.len());
+    println!("terminal roots  : {roots:?}");
+    println!("window          : {WINDOW:?}   threshold: {THRESHOLD:?}");
+    println!("elapsed         : {:?}", started.elapsed());
+    for proc in after.iter().filter(|p| binaries.contains(&p.name)) {
+        let burn = model::burn(&before, &after, proc.pid, &binaries);
         println!(
-            "    under: pid {:>6} ppid {:>6} {:<20} cpu {:?}",
-            p.pid, p.ppid, p.name, p.cpu
+            "  pid {:>6} {:<14} {:>8.1} ms  {}",
+            proc.pid,
+            proc.name,
+            burn.as_secs_f64() * 1000.0,
+            if lit.iter().any(|l| l.agent == proc.pid) {
+                "WORKING"
+            } else {
+                "idle"
+            }
         );
-    }
-
-    let lit = model::lit(
-        &before,
-        &after,
-        &binaries,
-        Duration::from_millis(10),
-        &roots,
-    );
-
-    println!("processes        : {}", after.len());
-    println!("terminal roots   : {roots:?}");
-    println!("under terminals  : {}", under2.len());
-    println!("cost per sample  : {cost:?} then {cost2:?}");
-    println!("agents lit       : {}", lit.len());
-    for l in &lit {
-        println!(
-            "  pid {:>6}  {:<14} owner {:?}  WORKING",
-            l.agent, l.name, l.owner
-        );
-    }
-    for p in after
-        .iter()
-        .filter(|p| binaries.contains(&p.name))
-        .filter(|p| !lit.iter().any(|l| l.agent == p.pid))
-    {
-        println!("  pid {:>6}  {:<14} dark (waiting)", p.pid, p.name);
     }
     for (app, n) in model::by_owner(&lit) {
         println!("app {app} has {n} agent(s) working");

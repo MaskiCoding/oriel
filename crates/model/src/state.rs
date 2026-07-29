@@ -40,7 +40,9 @@ impl WindowState {
 
     /// Whether a switcher should offer this window: on screen, or off it for a
     /// reason the user meant (minimized, app hidden). Anything else in the
-    /// enumeration is `WindowServer` residue.
+    /// Worth offering in the strip: a real user window that is on screen, or is
+    /// minimized or hidden and can be brought back. System chrome — notably the
+    /// title strip beside a fullscreen window — is excluded however it looks.
     pub fn switchable(self) -> bool {
         self.user && (self.on_screen || self.minimized || self.hidden)
     }
