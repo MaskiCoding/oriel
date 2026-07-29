@@ -13,6 +13,7 @@
 #![allow(clippy::cast_sign_loss)] // guarded by the `> 0` checks above each cast
 
 use core::ffi::{c_int, c_void};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use model::Proc;
@@ -22,8 +23,6 @@ const KERN_ARGMAX: c_int = 8;
 const KERN_PROCARGS2: c_int = 49;
 const PROC_ALL_PIDS: u32 = 1;
 const PROC_PIDTASKINFO: c_int = 4;
-const PROC_PIDTHREADINFO: c_int = 5;
-const PROC_PIDLISTTHREADS: c_int = 6;
 const PROC_PIDT_SHORTBSDINFO: c_int = 13;
 const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
 
@@ -44,23 +43,6 @@ struct ShortBsdInfo {
     svuid: u32,
     svgid: u32,
     rfu: u32,
-}
-
-/// `struct proc_threadinfo` — 112 bytes. Only the two CPU totals are read.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct ThreadInfo {
-    user_time: u64,
-    system_time: u64,
-    cpu_usage: i32,
-    policy: i32,
-    run_state: i32,
-    flags: i32,
-    sleep_time: i32,
-    curpri: i32,
-    priority: i32,
-    maxpriority: i32,
-    name: [u8; 64],
 }
 
 /// `struct proc_taskinfo` — 96 bytes. Only the two CPU totals are read.
@@ -87,7 +69,15 @@ struct TaskInfo {
     priority: i32,
 }
 
+/// `struct mach_timebase_info`: the ratio turning mach ticks into nanoseconds.
+#[repr(C)]
+struct MachTimebase {
+    numer: u32,
+    denom: u32,
+}
+
 unsafe extern "C" {
+    fn mach_timebase_info(info: *mut MachTimebase) -> c_int;
     fn proc_listpids(kind: u32, typeinfo: u32, buffer: *mut c_void, buffersize: c_int) -> c_int;
     fn proc_pidinfo(
         pid: c_int,
@@ -233,61 +223,37 @@ fn short_info(pid: i32) -> Option<ShortBsdInfo> {
     (wrote == size).then_some(info)
 }
 
-/// Total CPU burned by a process, live threads included.
+/// Total CPU burned by a process, in real time.
 ///
-/// The task totals alone are not that: they account only for threads that have
-/// already exited, so a process pegging a core reads as almost idle — measured,
-/// 48 ms against the 2420 ms `ps` reports for the same two seconds. A running
-/// thread's time lives in its own structure until it dies, so the live threads
-/// have to be walked and added back.
+/// `pti_total_user` and `pti_total_system` are mach absolute time units, not
+/// nanoseconds. On Apple Silicon the timebase is 125/3, so reading them as
+/// nanoseconds under-reports by nearly 42x: a process pegging a core measures
+/// 48 ms per two seconds instead of 2000. Converting through the timebase is
+/// the whole fix. The totals already include threads that are still running —
+/// `pti_threads_*` moves in lockstep with them — so there is nothing to walk
+/// and add, and adding it double-counts.
 fn cpu_time(pid: i32) -> Duration {
-    let mut total = task_info(pid).map_or(0, |t| t.total_user.saturating_add(t.total_system));
-    for tid in thread_ids(pid) {
-        if let Some(thread) = thread_info(pid, tid) {
-            total = total
-                .saturating_add(thread.user_time)
-                .saturating_add(thread.system_time);
+    let Some(task) = task_info(pid) else {
+        return Duration::ZERO;
+    };
+    let ticks = u128::from(task.total_user.saturating_add(task.total_system));
+    let (numer, denom) = timebase();
+    let nanos = ticks * u128::from(numer) / u128::from(denom.max(1));
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+/// The machine's mach-tick to nanosecond ratio, asked of the kernel once.
+fn timebase() -> (u32, u32) {
+    static TIMEBASE: OnceLock<(u32, u32)> = OnceLock::new();
+    *TIMEBASE.get_or_init(|| {
+        let mut info = MachTimebase { numer: 0, denom: 0 };
+        let ok = unsafe { mach_timebase_info(&raw mut info) };
+        if ok == 0 && info.numer > 0 && info.denom > 0 {
+            (info.numer, info.denom)
+        } else {
+            (1, 1)
         }
-    }
-    Duration::from_nanos(total)
-}
-
-fn thread_ids(pid: i32) -> Vec<u64> {
-    // This flavor will not size itself from a null buffer the way `proc_listpids`
-    // does — asking returns nothing at all — so the buffer is simply generous.
-    const CAP: usize = 512;
-    let mut buf = vec![0u64; CAP];
-    let cap = CAP;
-    let wrote = unsafe {
-        proc_pidinfo(
-            pid,
-            PROC_PIDLISTTHREADS,
-            0,
-            buf.as_mut_ptr().cast::<c_void>(),
-            (cap * size_of::<u64>()) as c_int,
-        )
-    };
-    if wrote <= 0 {
-        return Vec::new();
-    }
-    buf.truncate(wrote as usize / size_of::<u64>());
-    buf
-}
-
-fn thread_info(pid: i32, tid: u64) -> Option<ThreadInfo> {
-    // `name` is 64 bytes, past what Default derives for arrays.
-    let mut info: ThreadInfo = unsafe { core::mem::zeroed() };
-    let size = size_of::<ThreadInfo>() as c_int;
-    let wrote = unsafe {
-        proc_pidinfo(
-            pid,
-            PROC_PIDTHREADINFO,
-            tid,
-            (&raw mut info).cast::<c_void>(),
-            size,
-        )
-    };
-    (wrote == size).then_some(info)
+    })
 }
 
 fn task_info(pid: i32) -> Option<TaskInfo> {
@@ -341,7 +307,6 @@ mod tests {
     fn layouts_match_the_kernel_headers() {
         assert_eq!(size_of::<ShortBsdInfo>(), 64);
         assert_eq!(size_of::<TaskInfo>(), 96);
-        assert_eq!(size_of::<ThreadInfo>(), 112);
     }
 
     #[test]
@@ -378,10 +343,10 @@ mod tests {
 
     #[test]
     fn a_busy_process_reads_as_busy() {
-        // The task totals alone count only threads that have already exited, so
-        // this read as roughly two percent of the truth until live threads were
-        // walked and added back. Burn a known amount and insist most of it is
-        // visible, which is the shape of the bug rather than a fixed number.
+        // The task totals are mach ticks, not nanoseconds; read raw they were
+        // about two percent of the truth on this timebase. Burn a known amount
+        // of CPU and insist most of it is visible — the shape of the bug rather
+        // than a fixed number, so it holds on any timebase.
         let me = i32::try_from(std::process::id()).expect("pid fits");
         let mut snapshot = table();
         detail(&mut snapshot, &[me]);

@@ -100,8 +100,15 @@ impl MenuBar {
     /// Shows how many agents are working beside the status icon; nothing at all
     /// when none are, so the menu bar stays quiet in the common case.
     pub fn set_working(&self, count: usize) {
-        let title = (count > 0).then(|| format!(" {count}"));
-        self.tray.set_title(title.as_deref());
+        // An empty string rather than None: `set_title(None)` does not clear the
+        // status item on macOS, it declines to touch it, so a count that had
+        // risen would stay on the menu bar for the rest of the session.
+        let title = if count > 0 {
+            format!(" {count}")
+        } else {
+            String::new()
+        };
+        self.tray.set_title(Some(&title));
     }
 
     /// Reflects paused state in the menu (checkmark).

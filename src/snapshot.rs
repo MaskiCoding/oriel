@@ -106,6 +106,12 @@ pub fn app_pids() -> Vec<i32> {
     NSWorkspace::sharedWorkspace()
         .runningApplications()
         .iter()
+        // Only apps that can own a window. Attribution takes the *nearest*
+        // ancestor, and helper processes — Electron's renderers, an editor's
+        // language servers — sit between the shell and the bundle that actually
+        // owns the tile. Counting them means work is keyed to a pid no window
+        // has, so the menu-bar count rises while every tile stays dark.
+        .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
         .map(|app| app.processIdentifier())
         .filter(|pid| *pid > 0)
         .collect()
