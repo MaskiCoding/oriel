@@ -219,8 +219,8 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// Every process, with its parent. CPU is left at zero — fill it with
-/// [`detail`] for the few processes that could be agents.
+/// Every process, with its parent. CPU is left at zero and the name is the
+/// kernel `comm` — fill both in with [`detail`] before matching agents.
 pub fn table() -> Vec<Proc> {
     let mut out = Vec::new();
     for pid in pids() {

@@ -31,7 +31,7 @@ fn main() {
     let binaries: Vec<String> = BINARIES.iter().map(|s| (*s).to_string()).collect();
 
     let mut reader = proctable::Reader::new();
-    let mut sample = |_roots: &[model::Pid]| {
+    let mut sample = || {
         let mut table = proctable::table();
         // The whole table, matching the app: detached agents sit outside
         // every terminal tree and their comm can be a version string.
@@ -51,9 +51,9 @@ fn main() {
         .collect();
 
     let started = Instant::now();
-    let before = sample(&roots);
+    let before = sample();
     std::thread::sleep(WINDOW);
-    let after = sample(&roots);
+    let after = sample();
 
     let lit = model::lit(&before, &after, &binaries, THRESHOLD, &roots);
     println!("processes       : {}", after.len());

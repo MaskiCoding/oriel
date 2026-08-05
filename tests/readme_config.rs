@@ -20,13 +20,15 @@ fn readme_example_parses_with_the_real_schema() {
 
 /// Every `[section]` the shipped first-run file writes must appear in the
 /// README, or the documented schema is quietly incomplete.
-/// The two lantern switches are independent on purpose: the count without the
-/// drift is a real preference, so neither may quietly imply the other.
+/// The lantern switches are independent on purpose: the count without the
+/// drift is a real preference, and so is the drift without the count, so none
+/// may quietly imply another.
 #[test]
 fn the_lantern_switches_are_independent() {
     let cfg = config::Config::default();
     assert!(cfg.lantern.enabled);
     assert!(cfg.lantern.drift);
+    assert!(cfg.lantern.count);
 
     let quiet: config::Config =
         config::parse(&config::to_toml(&cfg).replace("drift = true", "drift = false"))
@@ -36,6 +38,17 @@ fn the_lantern_switches_are_independent() {
         "the count survives without the drift"
     );
     assert!(!quiet.lantern.drift);
+    assert!(quiet.lantern.count, "the count survives without the drift");
+
+    let still: config::Config =
+        config::parse(&config::to_toml(&cfg).replace("count = true", "count = false"))
+            .expect("count may be turned off on its own");
+    assert!(
+        still.lantern.enabled,
+        "detection survives without the count"
+    );
+    assert!(still.lantern.drift, "the drift survives without the count");
+    assert!(!still.lantern.count);
 }
 
 #[test]

@@ -16,6 +16,7 @@ enabled = false
 [lantern]
 enabled = true                 # detect agents at all; off also clears the menu-bar count
 drift = true                   # and mark the working window in the strip
+count = true                   # and count the working agents in the menu bar
 binaries = ["claude", "cursor-agent", "codex", "aider", "gemini", "opencode"]
 
 [animation]
