@@ -31,10 +31,12 @@ fn main() {
     let binaries: Vec<String> = BINARIES.iter().map(|s| (*s).to_string()).collect();
 
     let mut reader = proctable::Reader::new();
-    let mut sample = |roots: &[model::Pid]| {
+    let mut sample = |_roots: &[model::Pid]| {
         let mut table = proctable::table();
-        let under = model::descendants(&table, roots);
-        reader.detail(&mut table, &under);
+        // The whole table, matching the app: detached agents sit outside
+        // every terminal tree and their comm can be a version string.
+        let all: Vec<model::Pid> = table.iter().map(|p| p.pid).collect();
+        reader.detail(&mut table, &all);
         table
     };
 

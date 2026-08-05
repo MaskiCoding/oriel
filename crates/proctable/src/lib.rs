@@ -74,7 +74,7 @@ struct TaskInfo {
     priority: i32,
 }
 
-/// The fixed prefix returned by `PROC_PIDLISTFDS`.
+/// `struct proc_fdinfo` — 8 bytes; the rows `PROC_PIDLISTFDS` returns.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct FdInfo {
@@ -82,8 +82,9 @@ struct FdInfo {
     kind: u32,
 }
 
-/// Layouts below mirror `<sys/proc_info.h>`. The protocol union is kept opaque;
-/// for a unix socket its first two words are the connected socket and pcb.
+/// `struct proc_fileinfo` — 24 bytes. Layouts below mirror
+/// `<sys/proc_info.h>`. The protocol union is kept opaque; for a unix socket
+/// its first two words are the connected socket and pcb.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct FileInfo {
@@ -94,6 +95,7 @@ struct FileInfo {
     guard_flags: u32,
 }
 
+/// `struct vinfo_stat` — 136 bytes.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct VInfoStat {
@@ -111,6 +113,7 @@ struct VInfoStat {
     spare: [i64; 2],
 }
 
+/// `struct sockbuf_info` — 24 bytes.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct SockBufInfo {
@@ -119,6 +122,7 @@ struct SockBufInfo {
     timeout: i16,
 }
 
+/// `struct socket_info` — 768 bytes.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SocketInfo {
@@ -145,12 +149,34 @@ struct SocketInfo {
 }
 
 impl Default for SocketInfo {
+    // Not derived only because `[u8; 528]` has no `Default`.
     fn default() -> Self {
-        // Every field is an integer and zero is a valid initial byte pattern.
-        unsafe { std::mem::zeroed() }
+        Self {
+            stat: VInfoStat::default(),
+            socket: 0,
+            pcb: 0,
+            socket_type: 0,
+            protocol: 0,
+            family: 0,
+            options: 0,
+            linger: 0,
+            state: 0,
+            queue_len: 0,
+            incomplete_queue_len: 0,
+            queue_limit: 0,
+            timeout: 0,
+            error: 0,
+            out_of_band_mark: 0,
+            receive: SockBufInfo::default(),
+            send: SockBufInfo::default(),
+            kind: 0,
+            reserved: 0,
+            protocol_info: [0; 528],
+        }
     }
 }
 
+/// `struct socket_fdinfo` — 792 bytes.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 struct SocketFdInfo {
@@ -542,6 +568,10 @@ mod tests {
         assert_eq!(size_of::<ShortBsdInfo>(), 64);
         assert_eq!(size_of::<TaskInfo>(), 96);
         assert_eq!(size_of::<FdInfo>(), 8);
+        assert_eq!(size_of::<FileInfo>(), 24);
+        assert_eq!(size_of::<VInfoStat>(), 136);
+        assert_eq!(size_of::<SockBufInfo>(), 24);
+        assert_eq!(size_of::<SocketInfo>(), 768);
         assert_eq!(size_of::<SocketFdInfo>(), 792);
     }
 

@@ -466,6 +466,7 @@ mod tests {
                 vec![Pid(22)]
             },
         );
+        assert_eq!(out.len(), 1);
         assert_eq!(out[0].owners, vec![Pid(20)]);
     }
 
@@ -489,6 +490,7 @@ mod tests {
             &[Pid(20), Pid(30)],
             |_| vec![Pid(31), Pid(21), Pid(21)],
         );
+        assert_eq!(out.len(), 1);
         assert_eq!(out[0].owners, vec![Pid(20), Pid(30)]);
         assert_eq!(by_owner(&out), HashMap::from([(Pid(20), 1), (Pid(30), 1)]));
     }
@@ -509,6 +511,7 @@ mod tests {
         let out = lit_through(&before, &after, &agents(), tick(), &[Pid(1)], |_| {
             panic!("an attached chain needs no socket lookup")
         });
+        assert_eq!(out.len(), 1);
         assert_eq!(out[0].owners, vec![Pid(1)]);
     }
 }
