@@ -440,8 +440,7 @@ impl App {
         let Some(binding) = self.binding(idx).cloned() else {
             return;
         };
-        self.resolve_session_screen(binding.look.show_on);
-        let candidates = self.enumerate(&binding);
+        let candidates = self.enumerate(&binding, true);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
             self.strip.end_session();
             return;
@@ -502,12 +501,9 @@ impl App {
         let previous_show_on = self
             .session
             .as_ref()
-            .and_then(|live| self.binding(live.binding_idx))
-            .map(|binding| binding.look.show_on);
-        if previous_show_on != Some(binding.look.show_on) {
-            self.resolve_session_screen(binding.look.show_on);
-        }
-        let candidates = self.enumerate(&binding);
+            .and_then(|l| self.binding(l.binding_idx))
+            .map(|b| b.look.show_on);
+        let candidates = self.enumerate(&binding, previous_show_on != Some(binding.look.show_on));
         let Some(mut selection) = model::Session::start(candidates.len()) else {
             self.cancel();
             return;
@@ -769,7 +765,7 @@ impl App {
         let Some(binding) = self.binding(binding_idx).cloned() else {
             return;
         };
-        let candidates = self.enumerate(&binding);
+        let candidates = self.enumerate(&binding, false);
         if candidates.is_empty() {
             self.cancel();
             return;
@@ -982,7 +978,7 @@ impl App {
         let Some(binding) = self.binding(binding_idx).cloned() else {
             return;
         };
-        let base = self.enumerate(&binding);
+        let base = self.enumerate(&binding, false);
         if base.is_empty() {
             self.cancel();
             return;
@@ -1108,45 +1104,37 @@ impl App {
         }
     }
 
-    /// Resolves before lens filtering so `strip-screen` and panel placement
-    /// share one answer for the whole summon. The frontmost AX window is the
-    /// stable proxy for where a non-activating panel's user is working.
-    fn resolve_session_screen(&self, show_on: ui::ShowOn) {
-        let active_screen = if show_on == ui::ShowOn::ActiveScreen {
-            self.frontmost_window_screen()
-        } else {
-            None
-        };
-        self.strip.begin_session(show_on, active_screen);
-    }
-
-    fn frontmost_window_screen(&self) -> Option<u32> {
-        let pid = frontmost_pid();
-        let wid = front_window()?;
-        let frames = crate::snapshot::screen_frames();
-        if frames.is_empty() {
-            return None;
-        }
-        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|space| space.id).collect();
-        let window = self
-            .ws
-            .windows(&space_ids)
-            .into_iter()
-            .find(|window| window.pid == pid && window.wid == wid)?;
-        Some(winsrv::screen_index(
-            (window.x, window.y, window.width, window.height),
-            &frames,
-        ))
-    }
-
-    fn enumerate(&mut self, binding: &Binding) -> Vec<Candidate> {
+    /// Enumerates and, when `fix_screen` asks, pins the summon's screen from
+    /// the same snapshot first, so `strip-screen` filtering and panel
+    /// placement share one answer for the whole session.
+    ///
+    /// The active screen comes from the snapshot rather than the AX focused
+    /// window: the snapshot is MRU-ordered and already carries each window's
+    /// screen, and an AX round trip here would let a beach-balling frontmost
+    /// app hold the summon for its ~1 s messaging timeout — the one moment a
+    /// switcher must not wait on the app being escaped.
+    fn enumerate(&mut self, binding: &Binding, fix_screen: bool) -> Vec<Candidate> {
         let snap =
             crate::snapshot::snapshot_with(&self.ws, &mut self.mru, &self.rules, &mut self.bundles);
         let ids: Vec<model::WindowId> = snap.windows.iter().map(|w| w.id).collect();
         self.cache.retain(|wid| ids.contains(&model::WindowId(wid)));
 
+        let active_app = frontmost_pid();
+        if fix_screen {
+            // The frontmost app's most recently used window, else the most
+            // recently used window at all — both read straight from MRU order.
+            let active_screen = snap
+                .windows
+                .iter()
+                .find(|w| !w.windowless && w.app == active_app)
+                .or_else(|| snap.windows.iter().find(|w| !w.windowless))
+                .map(|w| w.screen);
+            self.strip
+                .begin_session(binding.look.show_on, active_screen);
+        }
+
         let ctx = model::ResolveCtx {
-            active_app: frontmost_pid(),
+            active_app,
             strip_screen: self.strip.screen_index(binding.look.show_on),
         };
         let ordered = model::resolve(&binding.model, &snap.windows, &ctx);
