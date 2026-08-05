@@ -442,7 +442,9 @@ impl App {
         };
         let candidates = self.enumerate(&binding, true);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
-            self.strip.end_session();
+            // Through the one teardown funnel, so the pinned screen and every
+            // other piece of session state are released together.
+            self.cancel();
             return;
         };
         if backward {
@@ -1164,14 +1166,22 @@ impl App {
 
     /// The screen holding the window with focus, read from the
     /// `WindowServer`'s z-order: the front-to-back query's first switchable
-    /// row is the focused window, whoever owns it. `None` when there is no
+    /// row is the focused window, whoever owns it. Only the current Space of
+    /// each display is asked — focus always lives on one of those, and a
+    /// background Space has no business answering. `None` when there is no
     /// such window or no screen to place it on.
     fn focused_window_screen(&self) -> Option<u32> {
         let frames = crate::snapshot::screen_frames();
         if frames.is_empty() {
             return None;
         }
-        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
+        let space_ids: Vec<u64> = self
+            .ws
+            .spaces()
+            .iter()
+            .filter(|s| s.current)
+            .map(|s| s.id)
+            .collect();
         self.ws
             .windows_ordered(&space_ids)
             .into_iter()
