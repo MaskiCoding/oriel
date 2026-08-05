@@ -1242,6 +1242,44 @@ pub struct Strip {
     mouse: Rc<MouseState>,
     /// Tile indices per row from the last `show`, top row first.
     rows: RefCell<Vec<Vec<usize>>>,
+    /// Screen fixed for the open summon. Repainting must not follow focus or
+    /// pointer changes while the user is still choosing a window.
+    session_screen: RefCell<Option<SessionScreen>>,
+}
+
+struct SessionScreen {
+    show_on: ShowOn,
+    screen: Option<Retained<NSScreen>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScreenChoice {
+    Indexed(usize),
+    Main,
+}
+
+fn screen_choice(
+    show_on: ShowOn,
+    active: Option<usize>,
+    pointer: Option<usize>,
+    screen_count: usize,
+) -> ScreenChoice {
+    match show_on {
+        ShowOn::ActiveScreen => active
+            .filter(|&i| i < screen_count)
+            .or((screen_count > 0).then_some(0))
+            .map_or(ScreenChoice::Main, ScreenChoice::Indexed),
+        ShowOn::MenubarScreen => {
+            if screen_count > 0 {
+                ScreenChoice::Indexed(0)
+            } else {
+                ScreenChoice::Main
+            }
+        }
+        ShowOn::PointerScreen => pointer
+            .filter(|&i| i < screen_count)
+            .map_or(ScreenChoice::Main, ScreenChoice::Indexed),
+    }
 }
 
 impl Strip {
@@ -1334,6 +1372,7 @@ impl Strip {
             fade_generation: Rc::new(Cell::new(0)),
             mouse,
             rows: RefCell::new(Vec::new()),
+            session_screen: RefCell::new(None),
         }
     }
 
@@ -1375,6 +1414,21 @@ impl Strip {
     /// Sets the presentation used by the next `show`.
     pub fn set_look(&self, look: Look) {
         self.look.set(look);
+    }
+
+    /// Fixes placement before a summon is resolved. Oriel never becomes key,
+    /// so the app layer supplies the frontmost window's screen for the active
+    /// policy; the UI retains the resulting `NSScreen` through every repaint.
+    pub fn begin_session(&self, show_on: ShowOn, active_screen: Option<u32>) {
+        let screen = self.resolve_screen(show_on, active_screen);
+        self.session_screen
+            .replace(Some(SessionScreen { show_on, screen }));
+    }
+
+    /// Releases the summon-scoped screen so standalone uses of the strip can
+    /// resolve their configured policy normally.
+    pub fn end_session(&self) {
+        self.session_screen.replace(None);
     }
 
     /// Shows the query row with `query` as its contents. `None` hides the row.
@@ -1709,23 +1763,38 @@ impl Strip {
     }
 
     fn target_screen(&self, show_on: ShowOn) -> Option<Retained<NSScreen>> {
-        match show_on {
-            ShowOn::ActiveScreen => NSScreen::mainScreen(self.mtm),
-            ShowOn::MenubarScreen => NSScreen::screens(self.mtm)
-                .firstObject()
-                .or_else(|| NSScreen::mainScreen(self.mtm)),
-            ShowOn::PointerScreen => {
-                let loc = mouse_location();
-                let screens = NSScreen::screens(self.mtm);
-                let n = screens.count();
-                for i in 0..n {
-                    let screen = screens.objectAtIndex(i);
-                    if NSPointInRect(loc, screen.frame()) {
-                        return Some(screen);
-                    }
-                }
-                NSScreen::mainScreen(self.mtm)
-            }
+        if let Some(cached) = self.session_screen.borrow().as_ref()
+            && cached.show_on == show_on
+        {
+            return cached.screen.clone();
+        }
+        self.resolve_screen(show_on, None)
+    }
+
+    fn resolve_screen(
+        &self,
+        show_on: ShowOn,
+        active_screen: Option<u32>,
+    ) -> Option<Retained<NSScreen>> {
+        let screens = NSScreen::screens(self.mtm);
+        let count = screens.count();
+        let pointer = if show_on == ShowOn::PointerScreen {
+            let loc = mouse_location();
+            (0..screens.count()).find(|&i| {
+                let screen = screens.objectAtIndex(i);
+                NSPointInRect(loc, screen.frame())
+            })
+        } else {
+            None
+        };
+        match screen_choice(
+            show_on,
+            active_screen.and_then(|i| usize::try_from(i).ok()),
+            pointer,
+            count,
+        ) {
+            ScreenChoice::Indexed(i) => Some(screens.objectAtIndex(i)),
+            ScreenChoice::Main => NSScreen::mainScreen(self.mtm),
         }
     }
 
@@ -2219,6 +2288,42 @@ mod tests {
         assert_eq!(look.title_show, TitleShow::Title);
         assert_eq!(look.title_truncate, TitleTruncate::End);
         assert!(look.markers);
+    }
+
+    #[test]
+    fn active_screen_prefers_focused_window_then_menubar() {
+        assert_eq!(
+            screen_choice(ShowOn::ActiveScreen, Some(2), None, 3),
+            ScreenChoice::Indexed(2)
+        );
+        assert_eq!(
+            screen_choice(ShowOn::ActiveScreen, None, None, 3),
+            ScreenChoice::Indexed(0)
+        );
+        assert_eq!(
+            screen_choice(ShowOn::ActiveScreen, Some(9), None, 3),
+            ScreenChoice::Indexed(0)
+        );
+        assert_eq!(
+            screen_choice(ShowOn::ActiveScreen, None, None, 0),
+            ScreenChoice::Main
+        );
+    }
+
+    #[test]
+    fn pointer_and_menubar_screen_policies_keep_their_fallbacks() {
+        assert_eq!(
+            screen_choice(ShowOn::PointerScreen, None, Some(1), 2),
+            ScreenChoice::Indexed(1)
+        );
+        assert_eq!(
+            screen_choice(ShowOn::PointerScreen, None, None, 2),
+            ScreenChoice::Main
+        );
+        assert_eq!(
+            screen_choice(ShowOn::MenubarScreen, Some(1), Some(1), 2),
+            ScreenChoice::Indexed(0)
+        );
     }
 
     #[test]
