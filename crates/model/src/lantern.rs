@@ -194,8 +194,9 @@ pub fn burn(before: &[Proc], after: &[Proc], pid: Pid, binaries: &[String]) -> D
 }
 
 /// Every process running under any of `roots`, roots included. Callers use this
-/// to resolve true executable names for the few processes that could be agents
-/// instead of the whole table, which costs a syscall each.
+/// to bound work to the processes that can matter — only a process under an
+/// app root can ever resolve to an owner, so only those are worth a per-fd
+/// socket inspection.
 pub fn descendants(table: &[Proc], roots: &[Pid]) -> Vec<Pid> {
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for p in table {
