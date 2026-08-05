@@ -167,8 +167,11 @@ fn lantern_probe() {
     let mut reader = proctable::Reader::new();
     let mut sample = || {
         let mut table = proctable::table();
-        let under = model::descendants(&table, &roots);
-        reader.detail(&mut table, &under);
+        // The whole table, as the app samples it: a detached agent sits
+        // outside every app tree, and a diagnostic that cannot see what the
+        // app sees is not a diagnostic.
+        let all: Vec<model::Pid> = table.iter().map(|p| p.pid).collect();
+        reader.detail(&mut table, &all);
         table
     };
     // Both samples must be detailed the same way, or the "before" CPU reads as

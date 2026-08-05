@@ -1,6 +1,6 @@
 //! Polls the process table and remembers which apps have an agent working.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// CPU an agent's subtree must burn between samples to count as working.
@@ -61,26 +61,21 @@ impl Lantern {
         let roots = self.apps.current().to_vec();
         let roots = roots.as_slice();
         let mut now = proctable::table();
-        let under_roots = model::descendants(&now, roots);
-        let mut under = under_roots.clone();
-        // Detached agents are outside every app tree. Their cheap kernel name
-        // is enough for most binaries; include those candidates so CPU is
-        // measured before any socket scan is considered.
-        under.extend(
-            now.iter()
-                .filter(|p| self.binaries.contains(&p.name))
-                .map(|p| p.pid),
-        );
-        under.sort_unstable();
-        under.dedup();
-        self.reader.detail(&mut now, &under);
+        // The whole table, not just processes under app roots: an agent in a
+        // detached session sits outside every app tree, and its kernel comm
+        // can be a version string rather than the command the user typed, so
+        // no cheap pre-filter can find it — only the resolved name can.
+        // Measured: 1.7 ms steady state for ~1100 processes, 18 ms on the
+        // first sweep while argv resolution is cold.
+        let all: Vec<model::Pid> = now.iter().map(|p| p.pid).collect();
+        self.reader.detail(&mut now, &all);
 
         // The first sample has no predecessor to difference against.
         if !self.prev.is_empty() {
             // Only a process under an app root can resolve to an owner, so
             // only those are worth the per-fd socket inspection — the whole
             // table would cost hundreds of processes' fd lists every poll.
-            let candidates = under_roots;
+            let candidates = model::descendants(&now, roots);
             let mut clients: HashMap<model::Pid, Vec<model::Pid>> = HashMap::new();
             let lit = model::lit_through(
                 &self.prev,
@@ -100,15 +95,14 @@ impl Lantern {
         self.prev = now;
     }
 
-    fn apply(&mut self, over: Vec<model::Lit>, at: Instant) {
-        let present: std::collections::HashSet<model::Pid> =
-            over.iter().map(|lit| lit.agent).collect();
+    fn apply(&mut self, lit: Vec<model::Lit>, at: Instant) {
+        let present: HashSet<model::Pid> = lit.iter().map(|l| l.agent).collect();
         self.streak.retain(|agent, _| present.contains(agent));
-        for agent in over {
-            let streak = self.streak.entry(agent.agent).or_default();
+        for l in lit {
+            let streak = self.streak.entry(l.agent).or_default();
             *streak += 1;
             if *streak >= CONFIRM {
-                self.lit.insert(agent.agent, (agent.owners, at));
+                self.lit.insert(l.agent, (l.owners, at));
             }
         }
         self.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
