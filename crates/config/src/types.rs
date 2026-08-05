@@ -138,6 +138,10 @@ pub struct Lantern {
     /// and the menu-bar count but leaves the tiles alone — the drift is the one
     /// moving thing in the strip, and not everyone wants it there.
     pub drift: bool,
+    /// Whether the menu bar shows how many agents are working. Off keeps the
+    /// detection and the drift but leaves the status item as a plain icon —
+    /// a number that changes by itself is a distraction not everyone wants.
+    pub count: bool,
     pub binaries: Vec<String>,
 }
 
@@ -146,6 +150,7 @@ impl Default for Lantern {
         Self {
             enabled: true,
             drift: true,
+            count: true,
             binaries: [
                 "claude",
                 "cursor-agent",

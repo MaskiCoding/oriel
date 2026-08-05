@@ -57,7 +57,12 @@ fn schedule_lantern() {
                 (0, false)
             } else {
                 app.lantern.poll();
-                (app.lantern.count(), app.session.is_some())
+                let count = if app.config.lantern.count {
+                    app.lantern.count()
+                } else {
+                    0
+                };
+                (count, app.session.is_some())
             }
         };
         if let Some(menubar) = app.borrow().menubar.as_ref() {
