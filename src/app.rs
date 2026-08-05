@@ -1105,14 +1105,18 @@ impl App {
     }
 
     /// Enumerates and, when `fix_screen` asks, pins the summon's screen from
-    /// the same snapshot first, so `strip-screen` filtering and panel
+    /// the same enumeration pass first, so `strip-screen` filtering and panel
     /// placement share one answer for the whole session.
     ///
-    /// The active screen comes from the snapshot rather than the AX focused
-    /// window: the snapshot is MRU-ordered and already carries each window's
-    /// screen, and an AX round trip here would let a beach-balling frontmost
-    /// app hold the summon for its ~1 s messaging timeout — the one moment a
-    /// switcher must not wait on the app being escaped.
+    /// The active screen comes from the `WindowServer`'s z-order rather than
+    /// the AX focused window: an AX round trip here would let a beach-balling
+    /// frontmost app hold the summon for its ~1 s messaging timeout — the one
+    /// moment a switcher must not wait on the app being escaped. Oriel's own
+    /// MRU is not enough: it moves on app activation and on jumps, so a focus
+    /// change *within* the frontmost app slips past it, and the strip would
+    /// pin to the display of a window the user left. The z-order cannot be
+    /// stale that way. The MRU-ordered snapshot stays as the fallback for the
+    /// moments the ordered query answers with nothing.
     fn enumerate(&mut self, binding: &Binding, fix_screen: bool) -> Vec<Candidate> {
         let snap =
             crate::snapshot::snapshot_with(&self.ws, &mut self.mru, &self.rules, &mut self.bundles);
@@ -1121,14 +1125,12 @@ impl App {
 
         let active_app = frontmost_pid();
         if fix_screen {
-            // The frontmost app's most recently used window, else the most
-            // recently used window at all — both read straight from MRU order.
-            let active_screen = snap
-                .windows
-                .iter()
-                .find(|w| !w.windowless && w.app == active_app)
-                .or_else(|| snap.windows.iter().find(|w| !w.windowless))
-                .map(|w| w.screen);
+            let active_screen = self.focused_window_screen().or_else(|| {
+                snap.windows
+                    .iter()
+                    .find(|w| !w.windowless)
+                    .map(|w| w.screen)
+            });
             self.strip
                 .begin_session(binding.look.show_on, active_screen);
         }
@@ -1158,6 +1160,23 @@ impl App {
                 })
             })
             .collect()
+    }
+
+    /// The screen holding the window with focus, read from the
+    /// `WindowServer`'s z-order: the front-to-back query's first switchable
+    /// row is the focused window, whoever owns it. `None` when there is no
+    /// such window or no screen to place it on.
+    fn focused_window_screen(&self) -> Option<u32> {
+        let frames = crate::snapshot::screen_frames();
+        if frames.is_empty() {
+            return None;
+        }
+        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|s| s.id).collect();
+        self.ws
+            .windows_ordered(&space_ids)
+            .into_iter()
+            .find(switchable)
+            .map(|w| winsrv::screen_index((w.x, w.y, w.width, w.height), &frames))
     }
 
     /// Repaints only the tiles whose lit state changed since the last poll.
