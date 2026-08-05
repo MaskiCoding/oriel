@@ -1258,14 +1258,19 @@ enum ScreenChoice {
     Main,
 }
 
-fn screen_choice(
-    show_on: ShowOn,
+/// The screens each policy could pick from. Named rather than two bare
+/// `Option<usize>`s: the call sites read `Found { active, pointer }`, which
+/// cannot be silently mis-ordered.
+#[derive(Clone, Copy, Default)]
+struct Found {
     active: Option<usize>,
     pointer: Option<usize>,
-    screen_count: usize,
-) -> ScreenChoice {
+}
+
+fn screen_choice(show_on: ShowOn, found: Found, screen_count: usize) -> ScreenChoice {
     match show_on {
-        ShowOn::ActiveScreen => active
+        ShowOn::ActiveScreen => found
+            .active
             .filter(|&i| i < screen_count)
             .or((screen_count > 0).then_some(0))
             .map_or(ScreenChoice::Main, ScreenChoice::Indexed),
@@ -1276,7 +1281,8 @@ fn screen_choice(
                 ScreenChoice::Main
             }
         }
-        ShowOn::PointerScreen => pointer
+        ShowOn::PointerScreen => found
+            .pointer
             .filter(|&i| i < screen_count)
             .map_or(ScreenChoice::Main, ScreenChoice::Indexed),
     }
@@ -1421,14 +1427,13 @@ impl Strip {
     /// policy; the UI retains the resulting `NSScreen` through every repaint.
     pub fn begin_session(&self, show_on: ShowOn, active_screen: Option<u32>) {
         let screen = self.resolve_screen(show_on, active_screen);
-        self.session_screen
-            .replace(Some(SessionScreen { show_on, screen }));
+        *self.session_screen.borrow_mut() = Some(SessionScreen { show_on, screen });
     }
 
     /// Releases the summon-scoped screen so standalone uses of the strip can
     /// resolve their configured policy normally.
     pub fn end_session(&self) {
-        self.session_screen.replace(None);
+        *self.session_screen.borrow_mut() = None;
     }
 
     /// Shows the query row with `query` as its contents. `None` hides the row.
@@ -1787,12 +1792,11 @@ impl Strip {
         } else {
             None
         };
-        match screen_choice(
-            show_on,
-            active_screen.and_then(|i| usize::try_from(i).ok()),
+        let found = Found {
+            active: active_screen.and_then(|i| usize::try_from(i).ok()),
             pointer,
-            count,
-        ) {
+        };
+        match screen_choice(show_on, found, count) {
             ScreenChoice::Indexed(i) => Some(screens.objectAtIndex(i)),
             ScreenChoice::Main => NSScreen::mainScreen(self.mtm),
         }
@@ -2293,19 +2297,33 @@ mod tests {
     #[test]
     fn active_screen_prefers_focused_window_then_menubar() {
         assert_eq!(
-            screen_choice(ShowOn::ActiveScreen, Some(2), None, 3),
+            screen_choice(
+                ShowOn::ActiveScreen,
+                Found {
+                    active: Some(2),
+                    pointer: None
+                },
+                3
+            ),
             ScreenChoice::Indexed(2)
         );
         assert_eq!(
-            screen_choice(ShowOn::ActiveScreen, None, None, 3),
+            screen_choice(ShowOn::ActiveScreen, Found::default(), 3),
             ScreenChoice::Indexed(0)
         );
         assert_eq!(
-            screen_choice(ShowOn::ActiveScreen, Some(9), None, 3),
+            screen_choice(
+                ShowOn::ActiveScreen,
+                Found {
+                    active: Some(9),
+                    pointer: None
+                },
+                3
+            ),
             ScreenChoice::Indexed(0)
         );
         assert_eq!(
-            screen_choice(ShowOn::ActiveScreen, None, None, 0),
+            screen_choice(ShowOn::ActiveScreen, Found::default(), 0),
             ScreenChoice::Main
         );
     }
@@ -2313,15 +2331,29 @@ mod tests {
     #[test]
     fn pointer_and_menubar_screen_policies_keep_their_fallbacks() {
         assert_eq!(
-            screen_choice(ShowOn::PointerScreen, None, Some(1), 2),
+            screen_choice(
+                ShowOn::PointerScreen,
+                Found {
+                    active: None,
+                    pointer: Some(1)
+                },
+                2
+            ),
             ScreenChoice::Indexed(1)
         );
         assert_eq!(
-            screen_choice(ShowOn::PointerScreen, None, None, 2),
+            screen_choice(ShowOn::PointerScreen, Found::default(), 2),
             ScreenChoice::Main
         );
         assert_eq!(
-            screen_choice(ShowOn::MenubarScreen, Some(1), Some(1), 2),
+            screen_choice(
+                ShowOn::MenubarScreen,
+                Found {
+                    active: Some(1),
+                    pointer: Some(1)
+                },
+                2
+            ),
             ScreenChoice::Indexed(0)
         );
     }

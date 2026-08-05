@@ -92,15 +92,29 @@ impl WindowServer {
         spaces
     }
 
+    /// Options 0x7, not 0x2: only the wider query also returns minimized
+    /// and hidden-app windows. It admits unordered ghosts too — callers
+    /// filter those out via the tags/attributes bits (`model::WindowState`).
+    /// The order carries no meaning; use [`Self::windows_ordered`] for z-order.
     pub fn windows(&self, space_ids: &[u64]) -> Vec<WindowInfo> {
+        self.query_windows(space_ids, 0x7)
+    }
+
+    /// The *ordered* windows of `space_ids`, front to back — measured, the
+    /// window with focus is the first row that decodes as switchable. Narrower
+    /// than [`Self::windows`]: minimized and hidden-app windows are absent,
+    /// which is fine for asking "where is the user right now" and wrong for
+    /// enumerating what a switcher should offer.
+    pub fn windows_ordered(&self, space_ids: &[u64]) -> Vec<WindowInfo> {
+        self.query_windows(space_ids, 0x2)
+    }
+
+    fn query_windows(&self, space_ids: &[u64], options: u32) -> Vec<WindowInfo> {
         let ids: Vec<CFRetained<CFNumber>> = space_ids
             .iter()
             .map(|&id| CFNumber::new_i64(id.cast_signed()))
             .collect();
         let spaces = CFArray::from_retained_objects(&ids);
-        // Options 0x7, not 0x2: only the wider query also returns minimized
-        // and hidden-app windows. It admits unordered ghosts too — callers
-        // filter those out via the tags/attributes bits (`model::WindowState`).
         let mut set_tags = 0_u64;
         let mut clear_tags = 0_u64;
         let raw = unsafe {
@@ -108,7 +122,7 @@ impl WindowServer {
                 self.cid,
                 0,
                 raw_ptr(&spaces),
-                0x7,
+                options,
                 &raw mut set_tags,
                 &raw mut clear_tags,
             )
