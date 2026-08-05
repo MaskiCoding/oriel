@@ -440,8 +440,10 @@ impl App {
         let Some(binding) = self.binding(idx).cloned() else {
             return;
         };
+        self.resolve_session_screen(binding.look.show_on);
         let candidates = self.enumerate(&binding);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
+            self.strip.end_session();
             return;
         };
         if backward {
@@ -497,6 +499,14 @@ impl App {
         let Some(binding) = self.binding(idx).cloned() else {
             return;
         };
+        let previous_show_on = self
+            .session
+            .as_ref()
+            .and_then(|live| self.binding(live.binding_idx))
+            .map(|binding| binding.look.show_on);
+        if previous_show_on != Some(binding.look.show_on) {
+            self.resolve_session_screen(binding.look.show_on);
+        }
         let candidates = self.enumerate(&binding);
         let Some(mut selection) = model::Session::start(candidates.len()) else {
             self.cancel();
@@ -1039,6 +1049,7 @@ impl App {
         self.session = None;
         self.strip.set_query(None);
         self.strip.hide();
+        self.strip.end_session();
         self.peek.hide();
         self.set_keys_enabled(false);
         self.flush_pending_config();
@@ -1054,6 +1065,7 @@ impl App {
         };
         self.strip.set_query(None);
         self.strip.hide();
+        self.strip.end_session();
         self.peek.hide();
         self.set_keys_enabled(false);
         let stamp = self.generation.get().wrapping_add(1);
@@ -1094,6 +1106,37 @@ impl App {
         if let Some(keys) = &self.keys {
             keys.set_enabled(enabled);
         }
+    }
+
+    /// Resolves before lens filtering so `strip-screen` and panel placement
+    /// share one answer for the whole summon. The frontmost AX window is the
+    /// stable proxy for where a non-activating panel's user is working.
+    fn resolve_session_screen(&self, show_on: ui::ShowOn) {
+        let active_screen = if show_on == ui::ShowOn::ActiveScreen {
+            self.frontmost_window_screen()
+        } else {
+            None
+        };
+        self.strip.begin_session(show_on, active_screen);
+    }
+
+    fn frontmost_window_screen(&self) -> Option<u32> {
+        let pid = frontmost_pid();
+        let wid = front_window()?;
+        let frames = crate::snapshot::screen_frames();
+        if frames.is_empty() {
+            return None;
+        }
+        let space_ids: Vec<u64> = self.ws.spaces().iter().map(|space| space.id).collect();
+        let window = self
+            .ws
+            .windows(&space_ids)
+            .into_iter()
+            .find(|window| window.pid == pid && window.wid == wid)?;
+        Some(winsrv::screen_index(
+            (window.x, window.y, window.width, window.height),
+            &frames,
+        ))
     }
 
     fn enumerate(&mut self, binding: &Binding) -> Vec<Candidate> {
