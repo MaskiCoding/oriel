@@ -23,8 +23,12 @@ const CTL_KERN: c_int = 1;
 const KERN_ARGMAX: c_int = 8;
 const KERN_PROCARGS2: c_int = 49;
 const PROC_ALL_PIDS: u32 = 1;
+const PROC_PIDLISTFDS: c_int = 1;
 const PROC_PIDTASKINFO: c_int = 4;
 const PROC_PIDT_SHORTBSDINFO: c_int = 13;
+const PROC_PIDFDSOCKETINFO: c_int = 3;
+const PROX_FDTYPE_SOCKET: u32 = 2;
+const SOCKINFO_UN: i32 = 3;
 const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
 
 /// `struct proc_bsdshortinfo` — 64 bytes.
@@ -70,6 +74,90 @@ struct TaskInfo {
     priority: i32,
 }
 
+/// The fixed prefix returned by `PROC_PIDLISTFDS`.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct FdInfo {
+    fd: i32,
+    kind: u32,
+}
+
+/// Layouts below mirror `<sys/proc_info.h>`. The protocol union is kept opaque;
+/// for a unix socket its first two words are the connected socket and pcb.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct FileInfo {
+    open_flags: u32,
+    status: u32,
+    offset: i64,
+    kind: i32,
+    guard_flags: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct VInfoStat {
+    dev: u32,
+    mode: u16,
+    nlink: u16,
+    ino: u64,
+    uid: u32,
+    gid: u32,
+    times_and_size: [i64; 10],
+    block_size: i32,
+    flags: u32,
+    generation: u32,
+    rdev: u32,
+    spare: [i64; 2],
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct SockBufInfo {
+    counts: [u32; 5],
+    flags: i16,
+    timeout: i16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SocketInfo {
+    stat: VInfoStat,
+    socket: u64,
+    pcb: u64,
+    socket_type: i32,
+    protocol: i32,
+    family: i32,
+    options: i16,
+    linger: i16,
+    state: i16,
+    queue_len: i16,
+    incomplete_queue_len: i16,
+    queue_limit: i16,
+    timeout: i16,
+    error: u16,
+    out_of_band_mark: u32,
+    receive: SockBufInfo,
+    send: SockBufInfo,
+    kind: i32,
+    reserved: u32,
+    protocol_info: [u8; 528],
+}
+
+impl Default for SocketInfo {
+    fn default() -> Self {
+        // Every field is an integer and zero is a valid initial byte pattern.
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct SocketFdInfo {
+    file: FileInfo,
+    socket: SocketInfo,
+}
+
 /// `struct mach_timebase_info`: the ratio turning mach ticks into nanoseconds.
 #[repr(C)]
 struct MachTimebase {
@@ -84,6 +172,13 @@ unsafe extern "C" {
         pid: c_int,
         flavor: c_int,
         arg: u64,
+        buffer: *mut c_void,
+        buffersize: c_int,
+    ) -> c_int;
+    fn proc_pidfdinfo(
+        pid: c_int,
+        fd: c_int,
+        flavor: c_int,
         buffer: *mut c_void,
         buffersize: c_int,
     ) -> c_int;
@@ -251,6 +346,102 @@ pub fn exec_name(pid: i32) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Same-user processes with a unix-domain socket connected to `server`.
+///
+/// The kernel exposes opaque protocol-control-block addresses for both ends of
+/// a unix socket. Matching one fd's peer pcb to the other fd's own pcb is the
+/// same relationship `lsof -U` reports, without depending on a multiplexer
+/// process name or socket path.
+pub fn connected_processes(server: Pid, candidates: &[Pid]) -> Vec<Pid> {
+    let Some(server_info) = short_info(server.0) else {
+        return Vec::new();
+    };
+    let server_sockets = unix_sockets(server.0);
+    if server_sockets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for &pid in candidates {
+        if pid == server {
+            continue;
+        }
+        let Some(info) = short_info(pid.0) else {
+            continue;
+        };
+        if info.uid != server_info.uid {
+            continue;
+        }
+        let connected = unix_sockets(pid.0).into_iter().any(|(pcb, peer)| {
+            server_sockets.iter().any(|&(server_pcb, server_peer)| {
+                (peer != 0 && peer == server_pcb) || (server_peer != 0 && server_peer == pcb)
+            })
+        });
+        if connected {
+            out.push(pid);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// `(own pcb, peer pcb)` for the unix sockets held by one process.
+fn unix_sockets(pid: i32) -> Vec<(u64, u64)> {
+    list_fds(pid)
+        .into_iter()
+        .filter(|fd| fd.kind == PROX_FDTYPE_SOCKET)
+        .filter_map(|fd| socket_info(pid, fd.fd))
+        .filter(|info| info.socket.kind == SOCKINFO_UN)
+        .map(|info| {
+            let peer = u64::from_ne_bytes(
+                info.socket.protocol_info[8..16]
+                    .try_into()
+                    .expect("unix peer pcb occupies eight bytes"),
+            );
+            (info.socket.pcb, peer)
+        })
+        .collect()
+}
+
+fn list_fds(pid: i32) -> Vec<FdInfo> {
+    let bytes = unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, core::ptr::null_mut(), 0) };
+    if bytes <= 0 {
+        return Vec::new();
+    }
+    let cap = (bytes as usize / size_of::<FdInfo>()).saturating_add(16);
+    let mut fds = vec![FdInfo::default(); cap];
+    let wrote = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDLISTFDS,
+            0,
+            fds.as_mut_ptr().cast::<c_void>(),
+            (cap * size_of::<FdInfo>()) as c_int,
+        )
+    };
+    if wrote <= 0 {
+        return Vec::new();
+    }
+    fds.truncate(wrote as usize / size_of::<FdInfo>());
+    fds
+}
+
+fn socket_info(pid: i32, fd: i32) -> Option<SocketFdInfo> {
+    let mut info = SocketFdInfo::default();
+    let size = size_of::<SocketFdInfo>() as c_int;
+    let wrote = unsafe {
+        proc_pidfdinfo(
+            pid,
+            fd,
+            PROC_PIDFDSOCKETINFO,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    (wrote == size).then_some(info)
+}
+
 fn short_info(pid: i32) -> Option<ShortBsdInfo> {
     let mut info = ShortBsdInfo::default();
     let size = size_of::<ShortBsdInfo>() as c_int;
@@ -350,6 +541,8 @@ mod tests {
     fn layouts_match_the_kernel_headers() {
         assert_eq!(size_of::<ShortBsdInfo>(), 64);
         assert_eq!(size_of::<TaskInfo>(), 96);
+        assert_eq!(size_of::<FdInfo>(), 8);
+        assert_eq!(size_of::<SocketFdInfo>(), 792);
     }
 
     #[test]

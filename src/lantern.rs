@@ -37,8 +37,9 @@ pub struct Lantern {
     prev: Vec<model::Proc>,
     reader: proctable::Reader,
     apps: crate::snapshot::AppPids,
-    lit: HashMap<model::Pid, (usize, Instant)>,
-    /// Consecutive samples each app has been over the threshold for.
+    /// Confirmed agents, with the apps reached through ancestry or sockets.
+    lit: HashMap<model::Pid, (Vec<model::Pid>, Instant)>,
+    /// Consecutive samples each agent has been over the threshold for.
     streak: HashMap<model::Pid, usize>,
 }
 
@@ -60,25 +61,57 @@ impl Lantern {
         let roots = self.apps.current().to_vec();
         let roots = roots.as_slice();
         let mut now = proctable::table();
-        let under = model::descendants(&now, roots);
+        let under_roots = model::descendants(&now, roots);
+        let mut under = under_roots.clone();
+        // Detached agents are outside every app tree. Their cheap kernel name
+        // is enough for most binaries; include those candidates so CPU is
+        // measured before any socket scan is considered.
+        under.extend(
+            now.iter()
+                .filter(|p| self.binaries.contains(&p.name))
+                .map(|p| p.pid),
+        );
+        under.sort_unstable();
+        under.dedup();
         self.reader.detail(&mut now, &under);
 
         // The first sample has no predecessor to difference against.
         if !self.prev.is_empty() {
-            let lit = model::lit(&self.prev, &now, &self.binaries, THRESHOLD, roots);
-            let over = model::by_owner(&lit);
-            let at = Instant::now();
-            self.streak.retain(|app, _| over.contains_key(app));
-            for (app, count) in over {
-                let streak = self.streak.entry(app).or_default();
-                *streak += 1;
-                if *streak >= CONFIRM {
-                    self.lit.insert(app, (count, at));
-                }
-            }
-            self.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
+            // Only a process under an app root can resolve to an owner, so
+            // only those are worth the per-fd socket inspection — the whole
+            // table would cost hundreds of processes' fd lists every poll.
+            let candidates = under_roots;
+            let mut clients: HashMap<model::Pid, Vec<model::Pid>> = HashMap::new();
+            let lit = model::lit_through(
+                &self.prev,
+                &now,
+                &self.binaries,
+                THRESHOLD,
+                roots,
+                |server| {
+                    clients
+                        .entry(server)
+                        .or_insert_with(|| proctable::connected_processes(server, &candidates))
+                        .clone()
+                },
+            );
+            self.apply(lit, Instant::now());
         }
         self.prev = now;
+    }
+
+    fn apply(&mut self, over: Vec<model::Lit>, at: Instant) {
+        let present: std::collections::HashSet<model::Pid> =
+            over.iter().map(|lit| lit.agent).collect();
+        self.streak.retain(|agent, _| present.contains(agent));
+        for agent in over {
+            let streak = self.streak.entry(agent.agent).or_default();
+            *streak += 1;
+            if *streak >= CONFIRM {
+                self.lit.insert(agent.agent, (agent.owners, at));
+            }
+        }
+        self.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
     }
 
     /// Re-reads which apps are running on the next poll.
@@ -105,12 +138,12 @@ impl Lantern {
 
     /// Whether this app has an agent working inside it.
     pub fn working(&self, app: model::Pid) -> bool {
-        self.lit.contains_key(&app)
+        self.lit.values().any(|(owners, _)| owners.contains(&app))
     }
 
-    /// How many agents are working across every app.
+    /// How many agents are working, including those with no attributable app.
     pub fn count(&self) -> usize {
-        self.lit.values().map(|(n, _)| *n).sum()
+        self.lit.len()
     }
 }
 
@@ -176,17 +209,7 @@ mod tests {
                     THRESHOLD,
                     &[model::Pid(1)],
                 );
-                let over = model::by_owner(&lit);
-                let at = Instant::now();
-                lantern.streak.retain(|app, _| over.contains_key(app));
-                for (app, count) in over {
-                    let streak = lantern.streak.entry(app).or_default();
-                    *streak += 1;
-                    if *streak >= CONFIRM {
-                        lantern.lit.insert(app, (count, at));
-                    }
-                }
-                lantern.lit.retain(|_, (_, seen)| seen.elapsed() < LATCH);
+                lantern.apply(lit, Instant::now());
             }
             lantern.prev = now;
             out.push(lantern.working(model::Pid(1)));
@@ -222,7 +245,9 @@ mod tests {
         let mut lantern = Lantern::new(vec!["claude".into()]);
         lantern.prev = forest(1, 2, Duration::from_secs(9));
         lantern.streak.insert(model::Pid(1), 5);
-        lantern.lit.insert(model::Pid(1), (1, Instant::now()));
+        lantern
+            .lit
+            .insert(model::Pid(2), (vec![model::Pid(1)], Instant::now()));
         lantern.reset();
         assert!(lantern.prev.is_empty());
         assert!(!lantern.working(model::Pid(1)));
@@ -244,5 +269,39 @@ mod tests {
         lantern.poll();
         assert_eq!(lantern.count(), 0);
         assert!(!lantern.working(own_pid()));
+    }
+
+    #[test]
+    fn ownerless_agents_confirm_latch_and_count_without_lighting_an_app() {
+        let mut lantern = Lantern::new(vec!["claude".into()]);
+        let ownerless = || model::Lit {
+            agent: model::Pid(9),
+            name: "claude".into(),
+            owners: Vec::new(),
+        };
+
+        lantern.apply(vec![ownerless()], Instant::now());
+        assert_eq!(lantern.count(), 0, "one sample is not confirmed");
+        lantern.apply(vec![ownerless()], Instant::now());
+        assert_eq!(lantern.count(), 1);
+        assert!(!lantern.working(model::Pid(1)));
+
+        lantern.apply(Vec::new(), Instant::now());
+        assert_eq!(lantern.count(), 1, "the confirmed agent remains latched");
+    }
+
+    #[test]
+    fn one_agent_with_two_viewers_counts_once_and_lights_both_apps() {
+        let mut lantern = Lantern::new(vec!["claude".into()]);
+        let detected = || model::Lit {
+            agent: model::Pid(9),
+            name: "claude".into(),
+            owners: vec![model::Pid(1), model::Pid(2)],
+        };
+        lantern.apply(vec![detected()], Instant::now());
+        lantern.apply(vec![detected()], Instant::now());
+        assert_eq!(lantern.count(), 1);
+        assert!(lantern.working(model::Pid(1)));
+        assert!(lantern.working(model::Pid(2)));
     }
 }
